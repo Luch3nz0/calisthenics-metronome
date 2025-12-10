@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tempo Trainer | Bodyweight Timer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bg">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+  </div>
+
+  <div class="app">
+    <header class="panel topbar">
+      <div>
+        <p class="eyebrow">Tempo Trainer</p>
+        <h1>Preview the time, tap start, follow the beat.</h1>
+        <p class="lede">Pick Normal or Intensive, see total duration instantly, then lock into a metronome with clear visuals and beeps.</p>
+      </div>
+      <div class="control-stack">
+        <div class="controls">
+          <button class="primary" id="start-btn">Start</button>
+          <button class="ghost" id="pause-btn" disabled>Pause</button>
+          <button class="ghost" id="reset-btn" disabled>Reset</button>
+        </div>
+        <div class="chip live" id="status-chip">Idle</div>
+      </div>
+    </header>
+
+    <main class="main-grid">
+      <section class="panel setup-panel" id="setup-panel">
+        <div class="row between">
+          <div>
+            <p class="eyebrow">Choose Flow</p>
+            <h2>Routine <span class="badge" id="program-label">Normal</span></h2>
+          </div>
+          <div class="stat-compact">
+            <p class="label">Total Time</p>
+            <p class="value" id="total-time">--:--</p>
+          </div>
+        </div>
+        <div class="program-toggle">
+          <button class="pill active" data-program="normal">
+            <span>Normal Flow</span>
+            <strong id="normal-time">--:--</strong>
+          </button>
+          <button class="pill" data-program="intensive">
+            <span>Intensive Circuit</span>
+            <strong id="intensive-time">--:--</strong>
+          </button>
+        </div>
+        <div class="sequence-panel">
+          <div class="row between">
+            <p class="eyebrow">Set sequence</p>
+            <p class="muted small">Colors: Push-Up · Pull-Up · Squat</p>
+          </div>
+          <div class="sequence-bar" id="sequence-bar"></div>
+          <div class="sequence-legend">
+            <span><span class="legend-dot push"></span>Push-Up</span>
+            <span><span class="legend-dot pull"></span>Pull-Up</span>
+            <span><span class="legend-dot squat"></span>Squat</span>
+          </div>
+        </div>
+        <div class="quick-stats">
+          <div>
+            <p class="label">Session length</p>
+            <p class="value" id="session-length">--:--</p>
+          </div>
+          <div>
+            <p class="label">Segments</p>
+            <p class="value" id="segment-count">0</p>
+          </div>
+          <div>
+            <p class="label">Sets</p>
+            <p class="value" id="total-sets">0</p>
+          </div>
+          <div>
+            <p class="label">Exercises</p>
+            <p class="value" id="total-exercises">0</p>
+          </div>
+        </div>
+        <div class="row between breakdown-header">
+          <div>
+            <p class="eyebrow">Breakdown</p>
+            <h3>Exercises</h3>
+          </div>
+          <p class="muted small">Scroll to preview tempo and rest.</p>
+        </div>
+        <div class="exercise-grid" id="exercise-list"></div>
+      </section>
+
+      <section class="panel player" id="player-panel">
+        <div class="player-top">
+          <div class="phase-pill" id="phase-pill">Idle</div>
+          <div class="session-remaining" id="session-remaining">Total: --:--</div>
+        </div>
+        <div class="player-placeholder" id="player-placeholder">
+          <div>
+            <p class="eyebrow">Ready</p>
+            <h3>Pick a routine and press Start</h3>
+            <p class="muted small">Timer stays hidden until you begin.</p>
+          </div>
+        </div>
+        <div class="player-main" id="player-main">
+          <div class="time-stack">
+            <div class="time" id="current-remaining">--</div>
+            <div class="phase-label" id="phase-label">Ready</div>
+            <div class="segment-progress">
+              <div id="segment-progress-bar"></div>
+            </div>
+            <div class="phase-blocks" id="phase-blocks"></div>
+          </div>
+          <div class="now">
+            <p class="eyebrow">Now</p>
+            <h3 id="current-title">Select a routine and press start</h3>
+            <p class="muted" id="current-detail">All cues will show here.</p>
+          </div>
+        </div>
+        <div class="progress" aria-label="Session progress">
+          <div id="progress-bar"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="dist/app.js"></script>
+</body>
+</html>
