@@ -13,113 +13,179 @@
   </div>
 
   <div class="app">
-    <header class="panel topbar">
-      <div>
-        <p class="eyebrow">Calisthenics Metronome</p>
-        <h1>No Skip</h1>
-        <p class="lede">Start the metronome and let it rip!</p>
-      </div>
-      <div class="control-stack">
-        <div class="controls">
-          <button class="primary" id="start-btn">Start</button>
-          <button class="ghost" id="pause-btn" disabled>Pause</button>
-          <button class="ghost" id="reset-btn" disabled>Reset</button>
-        </div>
-        <div class="chip live" id="status-chip">Idle</div>
-      </div>
-    </header>
-
-    <main class="main-grid">
-      <section class="panel setup-panel" id="setup-panel">
-        <div class="row between">
-          <div>
-            <p class="eyebrow">Choose Flow</p>
-            <h2>Routine <span class="badge" id="program-label">Normal</span></h2>
-          </div>
-          <div class="stat-compact">
-            <p class="label">Total Time</p>
-            <p class="value" id="total-time">--:--</p>
-          </div>
-        </div>
-        <div class="program-toggle">
-          <button class="pill active" data-program="normal">
-            <span>Normal Flow</span>
-            <strong id="normal-time">--:--</strong>
-          </button>
-          <button class="pill" data-program="intensive">
-            <span>Intensive Circuit</span>
-            <strong id="intensive-time">--:--</strong>
-          </button>
-        </div>
-        <div class="sequence-panel">
+    <main class="screen-stack">
+      <section class="screen" data-screen="select">
+        <div class="panel">
           <div class="row between">
-            <p class="eyebrow">Set sequence</p>
-            <p class="muted small">Colors: Push-Up · Pull-Up · Squat</p>
+            <div class="heading-block">
+              <p class="eyebrow">Select Training</p>
+              <h2>Select a training</h2>
+            </div>
+            <button class="ghost small" id="history-shortcut" hidden>History</button>
           </div>
-          <div class="sequence-bar" id="sequence-bar"></div>
-          <div class="sequence-legend">
-            <span><span class="legend-dot push"></span>Push-Up</span>
-            <span><span class="legend-dot pull"></span>Pull-Up</span>
-            <span><span class="legend-dot squat"></span>Squat</span>
-          </div>
+          <div class="training-list" id="training-list"></div>
         </div>
-        <div class="quick-stats">
-          <div>
-            <p class="label">Session length</p>
-            <p class="value" id="session-length">--:--</p>
-          </div>
-          <div>
-            <p class="label">Segments</p>
-            <p class="value" id="segment-count">0</p>
-          </div>
-          <div>
-            <p class="label">Sets</p>
-            <p class="value" id="total-sets">0</p>
-          </div>
-          <div>
-            <p class="label">Exercises</p>
-            <p class="value" id="total-exercises">0</p>
-          </div>
+        <div class="footer-actions">
+          <button class="ghost" id="select-history-btn" hidden>View history</button>
         </div>
-        <div class="row between breakdown-header">
-          <div>
-            <p class="eyebrow">Breakdown</p>
-            <h3>Exercises</h3>
-          </div>
-          <p class="muted small">Scroll to preview tempo and rest.</p>
-        </div>
-        <div class="exercise-grid" id="exercise-list"></div>
       </section>
 
-      <section class="panel player" id="player-panel">
-        <div class="player-top">
-          <div class="phase-pill" id="phase-pill">Idle</div>
-          <div class="session-remaining" id="session-remaining">Total: --:--</div>
-        </div>
-        <div class="player-placeholder" id="player-placeholder">
-          <div>
-            <p class="eyebrow">Ready</p>
-            <h3>Pick a routine and press Start</h3>
-            <p class="muted small">Timer stays hidden until you begin.</p>
-          </div>
-        </div>
-        <div class="player-main" id="player-main">
-          <div class="time-stack">
-            <div class="time" id="current-remaining">--</div>
-            <div class="phase-label" id="phase-label">Ready</div>
-            <div class="segment-progress">
-              <div id="segment-progress-bar"></div>
+      <section class="screen" data-screen="details" hidden>
+        <div class="panel">
+          <div class="row between">
+            <div>
+              <p class="eyebrow">Training Details</p>
+              <h2 id="detail-training-name">Training</h2>
+              <p class="muted small" id="detail-training-desc"></p>
             </div>
-            <div class="phase-blocks" id="phase-blocks"></div>
+            <span class="badge" id="detail-training-badge">Intensive</span>
           </div>
-          <div class="now">
-            <p class="eyebrow">Now</p>
-            <h3 id="current-title">Select a routine and press start</h3>
-            <p class="muted" id="current-detail">All cues will show here.</p>
+          <div class="quick-stats">
+            <div>
+              <p class="label">Duration</p>
+              <p class="value" id="total-time">--:--</p>
+            </div>
+            <div>
+              <p class="label">Segments</p>
+              <p class="value" id="segment-count">0</p>
+            </div>
+            <div>
+              <p class="label">Sets</p>
+              <p class="value" id="total-sets">0</p>
+            </div>
+            <div>
+              <p class="label">Exercises</p>
+              <p class="value" id="total-exercises">0</p>
+            </div>
+          </div>
+          <div class="row between breakdown-header">
+            <div class="heading-block">
+              <p class="eyebrow">Exercises</p>
+              <h3>What you will do</h3>
+            </div>
+            <p class="muted small">Tap any exercise for tips.</p>
+          </div>
+          <div class="exercise-grid scroll-list" id="detail-exercise-list"></div>
+        </div>
+        <div class="footer-actions">
+          <button class="ghost" id="detail-back-btn">Back</button>
+          <button class="primary wide" id="detail-start-btn">Start Training</button>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="exercise" hidden>
+        <div class="panel">
+          <p class="eyebrow">Exercise Details</p>
+          <h2 id="exercise-detail-title">Exercise</h2>
+          <p class="muted small" id="exercise-detail-meta"></p>
+          <div class="detail-block">
+            <h3>Tips</h3>
+            <p class="muted" id="exercise-detail-tips"></p>
+          </div>
+          <div class="detail-block">
+            <h3>Video</h3>
+            <p class="muted">Video coming soon.</p>
           </div>
         </div>
-        <div class="progress" aria-label="Session progress">
-          <div id="progress-bar"></div>
+        <div class="footer-actions single">
+          <button class="ghost" id="exercise-back-btn">Back to exercises</button>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="metronome" hidden>
+        <section class="panel player" id="player-panel">
+          <div class="row between player-header">
+            <div>
+              <p class="eyebrow">Metronome</p>
+              <h2 id="player-training-name">Training</h2>
+              <p class="muted small" id="player-training-desc"></p>
+            </div>
+            <div class="control-stack">
+              <div class="controls">
+                <button class="primary" id="start-btn">Start</button>
+                <button class="ghost" id="pause-btn" disabled>Pause</button>
+                <button class="ghost" id="reset-btn" disabled>Reset</button>
+              </div>
+              <div class="chip live" id="status-chip">Idle</div>
+            </div>
+          </div>
+          <div class="player-top">
+            <div class="phase-pill" id="phase-pill">Idle</div>
+            <div class="session-remaining" id="session-remaining">Total: --:--</div>
+          </div>
+          <div class="player-placeholder" id="player-placeholder">
+            <div>
+              <p class="eyebrow">Ready</p>
+              <h3>Press Start to begin</h3>
+              <p class="muted small">Stay on tempo and follow the cues.</p>
+            </div>
+          </div>
+          <div class="player-main" id="player-main">
+            <div class="time-stack">
+              <div class="time" id="current-remaining">--</div>
+              <div class="phase-label" id="phase-label">Ready</div>
+              <div class="segment-progress">
+                <div id="segment-progress-bar"></div>
+              </div>
+              <div class="phase-blocks" id="phase-blocks"></div>
+            </div>
+            <div class="now">
+              <p class="eyebrow">Now</p>
+              <h3 id="current-title">Select a routine and press start</h3>
+              <p class="muted" id="current-detail">All cues will show here.</p>
+            </div>
+          </div>
+          <div class="progress" aria-label="Session progress">
+            <div id="progress-bar"></div>
+          </div>
+        </section>
+        <div class="footer-actions single">
+          <button class="ghost" id="metronome-back-btn">Back</button>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="complete" hidden>
+        <div class="panel">
+          <p class="eyebrow">Training Complete</p>
+          <h2>Review your results</h2>
+          <p class="muted small" id="complete-training-name"></p>
+          <div class="quick-stats">
+            <div>
+              <p class="label">Trainings completed</p>
+              <p class="value" id="complete-count">0</p>
+            </div>
+            <div>
+              <p class="label">XP earned</p>
+              <p class="value" id="complete-xp-earned">0 XP</p>
+            </div>
+            <div>
+              <p class="label">Total XP</p>
+              <p class="value" id="complete-total-xp">0 XP</p>
+            </div>
+          </div>
+        </div>
+        <div class="footer-actions">
+          <button class="ghost" id="complete-to-selection">Back to training</button>
+          <button class="primary wide" id="complete-to-history">View history</button>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="history" hidden>
+        <div class="panel">
+          <div class="row between">
+            <div>
+              <p class="eyebrow">History</p>
+              <h2>Review past sessions</h2>
+            </div>
+            <div class="stat-card">
+              <p class="label">Total XP</p>
+              <p class="value" id="history-total-xp">0 XP</p>
+            </div>
+          </div>
+          <div class="history-list" id="history-list"></div>
+        </div>
+        <div class="footer-actions single">
+          <button class="ghost" id="history-back-btn">Back to selection</button>
         </div>
       </section>
     </main>
