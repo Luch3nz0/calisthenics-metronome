@@ -356,40 +356,40 @@ function createPrepSegment() {
 function buildSchedule(programKey) {
     const schedule = [];
     if (programKey === 'intensive') {
+        const items = [];
         trainingPrograms.intensive.forEach((group) => {
             const exercises = group.exercises;
             const maxSets = Math.max(...exercises.map(ex => ex.sets || 0));
             for (let round = 1; round <= maxSets; round++) {
-                exercises.forEach((exercise, idx) => {
+                exercises.forEach(exercise => {
                     if (round > (exercise.sets || 0))
                         return;
-                    const segments = createSetSegments(exercise, round, true);
-                    schedule.push(...segments);
-                    const restBetweenSets = typeof exercise.rest === 'number' ? exercise.rest : 0;
-                    if (restBetweenSets <= 0)
-                        return;
-                    const hasNextInRound = exercises
-                        .slice(idx + 1)
-                        .some(nextExercise => round <= (nextExercise.sets || 0));
-                    const hasNextRound = round < maxSets;
-                    const hasNextExercise = hasNextInRound || hasNextRound;
-                    const endsWithRest = segments[segments.length - 1]?.phase === 'setRest';
-                    if (hasNextExercise && !endsWithRest) {
-                        schedule.push({
-                            exerciseName: exercise.name,
-                            routine: exercise.routine,
-                            set: round,
-                            totalSets: exercise.sets,
-                            rep: null,
-                            totalReps: null,
-                            phase: 'setRest',
-                            type: 'rest',
-                            duration: restBetweenSets,
-                            group: exercise.group || null,
-                            tempoParts: {
-                                setRest: restBetweenSets
-                            }
-                        });
+                    items.push({ exercise, round });
+                });
+            }
+        });
+        items.forEach((item, idx) => {
+            const segments = createSetSegments(item.exercise, item.round, true);
+            schedule.push(...segments);
+            const restBetweenSets = typeof item.exercise.rest === 'number' ? item.exercise.rest : 0;
+            if (restBetweenSets <= 0)
+                return;
+            const hasNextExercise = idx < items.length - 1;
+            const endsWithRest = segments[segments.length - 1]?.phase === 'setRest';
+            if (hasNextExercise && !endsWithRest) {
+                schedule.push({
+                    exerciseName: item.exercise.name,
+                    routine: item.exercise.routine,
+                    set: item.round,
+                    totalSets: item.exercise.sets,
+                    rep: null,
+                    totalReps: null,
+                    phase: 'setRest',
+                    type: 'rest',
+                    duration: restBetweenSets,
+                    group: item.exercise.group || null,
+                    tempoParts: {
+                        setRest: restBetweenSets
                     }
                 });
             }
