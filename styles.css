@@ -7,6 +7,9 @@
   --push: #f4a261;
   --pull: #3fa9f5;
   --squat: #7ddf89;
+  --core: #e9c46a;
+  --cardio: #f3722c;
+  --mobility: #8ecae6;
   --text: #f7f9ff;
   --muted: #9fb0c7;
   --danger: #ff6b6b;
@@ -180,6 +183,10 @@ p { margin: 0; color: var(--muted); }
 .label { color: var(--muted); font-size: 13px; }
 
 .breakdown-header { margin-top: 4px; }
+
+#exercise-detail-tips {
+  white-space: pre-line;
+}
 
 .exercise-grid {
   display: grid;

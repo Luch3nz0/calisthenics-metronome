@@ -1,7 +1,14 @@
 import { trainingPrograms } from './exercises.js'
-import type { Exercise, TrainingGroup, TempoExercise, TimeExercise } from './exercises.js'
+import type {
+  Exercise,
+  TrainingGroup,
+  TempoExercise,
+  TimeExercise,
+  TrainingProgram,
+  TrainingProgramKey
+} from './exercises.js'
 
-type ProgramKey = 'intensive' | 'test'
+type ProgramKey = TrainingProgramKey | 'test'
 
 type ScreenKey = 'select' | 'details' | 'exercise' | 'metronome' | 'complete' | 'history'
 
@@ -70,25 +77,66 @@ type State = {
 const TRAININGS: Training[] = [
   {
     id: 'default-training',
-    name: 'Default Training',
-    description: '',
+    name: 'Calistenia corpo inteiro (1h)',
+    description: 'Barra fixa, barra com anilhas e colchonete.',
     programKey: 'intensive',
     difficulty: 1
   },
   {
-    id: 'test-training',
-    name: 'Test Training',
-    description: 'Quick run to verify completion screens.',
+    id: 'home-training',
+    name: 'Treino em casa',
+    description: '45s de exercício · 15s de pausa · sem equipamento.',
+    programKey: 'home',
+    difficulty: 1
+  },
+  {
+    id: 'core-training',
+    name: 'Abdômen 8 min',
+    description: '60s por exercício · sem pausa.',
+    programKey: 'core',
+    difficulty: 1
+  },
+  {
+    id: 'stretch-training',
+    name: 'Alongamento',
+    description: '30s por exercício · sem pausa.',
+    programKey: 'stretch',
+    difficulty: 1
+  },
+  {
+    id: 'flash-training',
+    name: 'Treino iniciante flash',
+    description: '10 movimentos de 60s + aquecimento · pausa de 2s.',
+    programKey: 'flash',
+    difficulty: 1
+  },
+  {
+    id: 'test-training-easy',
+    name: 'Treino teste curto (fácil)',
+    description: 'Sequência curta para validar telas · XP x1.',
     programKey: 'test',
     difficulty: 1
+  },
+  {
+    id: 'test-training-medium',
+    name: 'Treino teste curto (intermediário)',
+    description: 'Sequência curta para validar telas · XP x2.',
+    programKey: 'test',
+    difficulty: 2
+  },
+  {
+    id: 'test-training-hard',
+    name: 'Treino teste curto (difícil)',
+    description: 'Sequência curta para validar telas · XP x3.',
+    programKey: 'test',
+    difficulty: 3
   }
 ]
 
 const HISTORY_STORAGE_KEY = 'calisthenics-history'
 const XP_RATE = 1
 const PREP_DELAY_SECONDS = 5
-const TIPS_PLACEHOLDER =
-  'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Focus on full control, steady breathing, and clean range of motion.'
+const NO_TIPS_MESSAGE = 'Sem dicas adicionais para este exercício.'
 
 const state: State = {
   programKey: 'intensive',
@@ -162,19 +210,31 @@ const els = {
 }
 
 const phaseMeta: Record<PhaseKey, PhaseMeta> = {
-  go: { label: 'Go', tone: 880 },
-  pause: { label: 'Pause', tone: 720 },
-  return: { label: 'Return', tone: 900 },
-  rest: { label: 'Rest', tone: 520 },
-  hold: { label: 'Hold', tone: 760 },
-  setRest: { label: 'Rest', tone: 460 },
-  prep: { label: 'Get Ready', tone: 0 }
+  go: { label: 'Vai', tone: 880 },
+  pause: { label: 'Pausa', tone: 720 },
+  return: { label: 'Volta', tone: 900 },
+  rest: { label: 'Descanso', tone: 520 },
+  hold: { label: 'Segura', tone: 760 },
+  setRest: { label: 'Descanso', tone: 460 },
+  prep: { label: 'Prepare-se', tone: 0 }
 }
 
 const routineColors: Record<Exercise['routine'], string> = {
   'Push-Up': getComputedStyle(document.documentElement).getPropertyValue('--push') || '#f4a261',
   'Pull-Up': getComputedStyle(document.documentElement).getPropertyValue('--pull') || '#3fa9f5',
-  Squat: getComputedStyle(document.documentElement).getPropertyValue('--squat') || '#7ddf89'
+  Squat: getComputedStyle(document.documentElement).getPropertyValue('--squat') || '#7ddf89',
+  Core: getComputedStyle(document.documentElement).getPropertyValue('--core') || '#e9c46a',
+  Cardio: getComputedStyle(document.documentElement).getPropertyValue('--cardio') || '#f3722c',
+  Mobility: getComputedStyle(document.documentElement).getPropertyValue('--mobility') || '#8ecae6'
+}
+
+const routineLabels: Record<Exercise['routine'], string> = {
+  'Push-Up': 'Empurrar',
+  'Pull-Up': 'Puxar',
+  Squat: 'Agachamento',
+  Core: 'Abdômen',
+  Cardio: 'Cardio',
+  Mobility: 'Mobilidade'
 }
 
 function hasTempo(exercise: Exercise): exercise is TempoExercise {
@@ -183,6 +243,10 @@ function hasTempo(exercise: Exercise): exercise is TempoExercise {
 
 function hasTime(exercise: Exercise): exercise is TimeExercise {
   return 'time' in exercise
+}
+
+function formatRoutineLabel(routine: Exercise['routine']): string {
+  return routineLabels[routine] ?? routine
 }
 
 function createTestExercise(exercise: Exercise, group: number): Exercise {
@@ -219,7 +283,12 @@ function createTestExercise(exercise: Exercise, group: number): Exercise {
   throw new Error(`Unsupported exercise type: ${String(_exhaustive)}`)
 }
 
-const TEST_TRAINING_GROUPS: TrainingGroup[] = trainingPrograms.intensive.map(group => ({
+const intensiveProgram = trainingPrograms.intensive
+if (intensiveProgram.kind !== 'intensive') {
+  throw new Error('Programa intensivo inválido.')
+}
+
+const TEST_TRAINING_GROUPS: TrainingGroup[] = intensiveProgram.groups.map(group => ({
   group: group.group,
   restMultiplier: group.restMultiplier,
   exercises: group.exercises.slice(0, 1).map(exercise => createTestExercise(exercise, group.group))
@@ -351,12 +420,12 @@ function renderTrainingList(): void {
     return `
       <button class="training-card ${active}" type="button" data-training-id="${training.id}">
         <div>
-          <p class="eyebrow">Training</p>
+          <p class="eyebrow">Treino</p>
           <h3>${training.name}</h3>
           ${desc ? `<p class="muted small">${desc}</p>` : ''}
         </div>
         <div class="training-stat">
-          <span class="label">Duration</span>
+          <span class="label">Duração</span>
           <span class="value">${formatSeconds(summary.totalSeconds)}</span>
         </div>
       </button>
@@ -404,23 +473,24 @@ function renderExerciseList(): void {
       : null
     const setsCount = ex.sets ?? 0
     const volume = hasTempo(ex)
-      ? `${setsCount} x ${ex.reps} reps`
+      ? `${setsCount} x ${ex.reps} repetições`
       : hasTime(ex)
-      ? `${setsCount} x ${ex.time}s hold`
-      : `${setsCount} sets`
+      ? `${setsCount} x ${ex.time}s`
+      : `${setsCount} séries`
+    const restLabel = ex.rest > 0 ? `Pausa: ${formatSeconds(ex.rest || 0)}` : ''
 
     return `
       <button class="exercise-card" type="button" data-exercise-card="${ex.name}" data-exercise-name="${ex.name}" style="--card-accent:${color}">
         <div class="meta">
-          <span class="badge">${ex.routine || 'Exercise'}</span>
+          <span class="badge">${formatRoutineLabel(ex.routine)}</span>
           <span class="time">~${formatSeconds(totalSeconds)}</span>
         </div>
         <div class="name">${ex.name}</div>
         <div class="tempo">${volume}${tempo ? ` · ${tempo}` : ''}</div>
-        <div class="tempo">Rest between sets: ${formatSeconds(ex.rest || 0)}</div>
+        ${restLabel ? `<div class="tempo">${restLabel}</div>` : ''}
         ${
           ex.group
-            ? `<div class="badge">Group ${ex.group} · Rest x${Number(ex.restMultiplier || 1).toFixed(2)}</div>`
+            ? `<div class="badge">Grupo ${ex.group} · Descanso x${Number(ex.restMultiplier || 1).toFixed(2)}</div>`
             : ''
         }
       </button>
@@ -435,18 +505,19 @@ function showExerciseDetails(exerciseName: string): void {
   if (!exercise) return
   els.exerciseDetailTitle.textContent = exercise.name
   els.exerciseDetailMeta.textContent = formatExerciseMeta(exercise)
-  els.exerciseDetailTips.textContent = TIPS_PLACEHOLDER
+  const tips = exercise.tips?.length ? exercise.tips.map(tip => `• ${tip}`).join('\n') : NO_TIPS_MESSAGE
+  els.exerciseDetailTips.textContent = tips
   showScreen('exercise')
 }
 
 function formatExerciseMeta(exercise: Exercise): string {
-  const base = `${exercise.routine} · ${exercise.sets} sets`
+  const base = `${formatRoutineLabel(exercise.routine)} · ${exercise.sets} séries`
   if (hasTempo(exercise)) {
     const tempo = `${exercise.tempo.go}-${exercise.tempo.pause}-${exercise.tempo.return}-${exercise.tempo.rest}`
-    return `${base} · ${exercise.reps} reps · Tempo ${tempo}`
+    return `${base} · ${exercise.reps} repetições · Tempo ${tempo}`
   }
   if (hasTime(exercise)) {
-    return `${base} · ${exercise.time}s hold`
+    return `${base} · ${exercise.time}s`
   }
   return base
 }
@@ -514,7 +585,7 @@ function renderCompletion(entry: HistoryEntry): void {
 
 function renderHistory(): void {
   if (!historyEntries.length) {
-    els.historyList.innerHTML = '<p class="muted small">No trainings completed yet.</p>'
+    els.historyList.innerHTML = '<p class="muted small">Nenhum treino concluído ainda.</p>'
     els.historyTotalXp.textContent = '0 XP'
     return
   }
@@ -555,17 +626,32 @@ function cloneExercise(exercise: Exercise): Exercise {
   return exercise
 }
 
+function getProgramDefinition(key: ProgramKey): TrainingProgram {
+  if (key === 'test') {
+    return { kind: 'intensive', groups: TEST_TRAINING_GROUPS }
+  }
+  return trainingPrograms[key]
+}
+
 function getProgramExercises(key: ProgramKey): Exercise[] {
-  return getProgramGroups(key).flatMap((group: TrainingGroup) =>
+  const program = getProgramDefinition(key)
+  if (program.kind === 'sequence') {
+    const seen = new Set<string>()
+    return program.sequence
+      .filter(ex => {
+        if (seen.has(ex.name)) return false
+        seen.add(ex.name)
+        return true
+      })
+      .map(ex => cloneExercise(ex))
+  }
+
+  return program.groups.flatMap((group: TrainingGroup) =>
     group.exercises.map(ex => ({
       ...cloneExercise(ex),
       group: group.group
     }))
   )
-}
-
-function getProgramGroups(key: ProgramKey): TrainingGroup[] {
-  return key === 'test' ? TEST_TRAINING_GROUPS : trainingPrograms.intensive
 }
 
 function computeProgramSummary(programKey: ProgramKey): ProgramSummary {
@@ -653,8 +739,8 @@ function createSetSegments(exercise: Exercise, setNumber: number, includeSetRest
 
 function createPrepSegment(): ScheduleSegment {
   return {
-    exerciseName: 'Get Ready',
-    routine: 'Push-Up',
+    exerciseName: 'Prepare-se',
+    routine: 'Cardio',
     set: 0,
     totalSets: 0,
     rep: null,
@@ -670,7 +756,11 @@ function createPrepSegment(): ScheduleSegment {
 }
 
 function buildSchedule(programKey: ProgramKey): ScheduleSegment[] {
-  return buildIntensiveSchedule(getProgramGroups(programKey))
+  const program = getProgramDefinition(programKey)
+  if (program.kind === 'sequence') {
+    return buildSequenceSchedule(program.sequence)
+  }
+  return buildIntensiveSchedule(program.groups)
 }
 
 function buildIntensiveSchedule(groups: TrainingGroup[]): ScheduleSegment[] {
@@ -718,6 +808,51 @@ function buildIntensiveSchedule(groups: TrainingGroup[]): ScheduleSegment[] {
   return schedule
 }
 
+function createRestSegment(exercise: Exercise, setNumber: number, restSeconds: number): ScheduleSegment {
+  return {
+    exerciseName: exercise.name,
+    routine: exercise.routine,
+    set: setNumber,
+    totalSets: exercise.sets,
+    rep: null,
+    totalReps: null,
+    phase: 'setRest',
+    type: 'rest',
+    duration: restSeconds,
+    group: exercise.group || null,
+    tempoParts: {
+      setRest: restSeconds
+    }
+  }
+}
+
+function buildSequenceSchedule(sequence: Exercise[]): ScheduleSegment[] {
+  const schedule: ScheduleSegment[] = []
+  const totalsByName = sequence.reduce<Record<string, number>>((acc, exercise) => {
+    acc[exercise.name] = (acc[exercise.name] ?? 0) + 1
+    return acc
+  }, {})
+  const occurrenceByName: Record<string, number> = {}
+
+  sequence.forEach((exercise, index) => {
+    occurrenceByName[exercise.name] = (occurrenceByName[exercise.name] ?? 0) + 1
+    const setNumber = occurrenceByName[exercise.name]
+    const totalSets = totalsByName[exercise.name] || exercise.sets || 1
+    const resolved = totalSets !== exercise.sets ? { ...exercise, sets: totalSets } : exercise
+    const segments = createSetSegments(resolved, setNumber, false)
+    schedule.push(...segments)
+
+    const restAfter = typeof resolved.rest === 'number' ? resolved.rest : 0
+    const hasNext = index < sequence.length - 1
+    if (hasNext && restAfter > 0) {
+      schedule.push(createRestSegment(resolved, setNumber, restAfter))
+    }
+  })
+
+  if (PREP_DELAY_SECONDS > 0) schedule.unshift(createPrepSegment())
+  return schedule
+}
+
 function startSession() {
   if (state.animationId) cancelAnimationFrame(state.animationId)
   state.animationId = null
@@ -737,11 +872,11 @@ function startSession() {
 
   state.status = 'running'
   updateStatusChip()
-  els.start.textContent = 'Restart'
-  els.pause.textContent = 'Pause'
+  els.start.textContent = 'Reiniciar'
+  els.pause.textContent = 'Pausar'
   els.pause.disabled = false
   els.reset.disabled = false
-  els.sessionRemaining.textContent = `Session left: ${formatSeconds(Math.ceil(state.sessionTotalMs / 1000))}`
+  els.sessionRemaining.textContent = `Tempo restante: ${formatSeconds(Math.ceil(state.sessionTotalMs / 1000))}`
   setPlayerActive(true)
   startSegment(state.schedule[state.pointer])
 }
@@ -751,14 +886,14 @@ function pauseSession() {
   state.animationId = null
   state.status = 'paused'
   updateStatusChip()
-  els.pause.textContent = 'Resume'
+  els.pause.textContent = 'Retomar'
 }
 
 function resumeSession() {
   if (!state.schedule.length) return
   state.status = 'running'
   updateStatusChip()
-  els.pause.textContent = 'Pause'
+  els.pause.textContent = 'Pausar'
   const elapsedBeforePause = state.segmentDurationMs - state.remainingMs
   state.segmentStartedAt = performance.now() - elapsedBeforePause
   state.lastCountdownSecond = null
@@ -780,14 +915,14 @@ function resetSession(updateChip = true): void {
   state.sessionTotalMs = 0
   state.segmentDurationMs = 0
   state.remainingMs = 0
-  els.start.textContent = 'Start'
-  els.pause.textContent = 'Pause'
+  els.start.textContent = 'Iniciar'
+  els.pause.textContent = 'Pausar'
   els.pause.disabled = true
   els.reset.disabled = true
-  els.currentTitle.textContent = 'Ready to begin'
-  els.currentDetail.textContent = 'Press start to begin the session.'
+  els.currentTitle.textContent = 'Pronto para começar'
+  els.currentDetail.textContent = 'Toque em iniciar para começar o treino.'
   els.currentRemaining.textContent = '--'
-  els.phaseLabel.textContent = 'Ready'
+  els.phaseLabel.textContent = 'Pronto'
   setPhasePill(null)
   els.progressBar.style.width = '0%'
   if (els.segmentProgress) els.segmentProgress.style.width = '0%'
@@ -856,10 +991,10 @@ function finishSession() {
   updateStatusChip()
   els.pause.disabled = true
   els.currentRemaining.textContent = '00:00'
-  els.sessionRemaining.textContent = 'Done'
+  els.sessionRemaining.textContent = 'Concluído'
   els.progressBar.style.width = '100%'
   if (els.segmentProgress) els.segmentProgress.style.width = '100%'
-  setPhasePill(null, { label: 'Done', tone: 0 })
+  setPhasePill(null, { label: 'Concluído', tone: 0 })
   playTone(1020, 0.25)
 
   const entry = recordCompletion()
@@ -884,8 +1019,12 @@ function updatePlayerUI(): void {
   }
 
   const phase = phaseMeta[segment.phase] ?? { label: segment.phase, tone: 0 }
-  const repText = segment.rep ? `Rep ${segment.rep}/${segment.totalReps}` : ''
-  const setText = segment.totalSets ? `Set ${segment.set}/${segment.totalSets}` : ''
+  const repText =
+    segment.totalReps && segment.totalReps > 1 && segment.rep
+      ? `Repetição ${segment.rep}/${segment.totalReps}`
+      : ''
+  const setText =
+    segment.totalSets && segment.totalSets > 1 ? `Série ${segment.set}/${segment.totalSets}` : ''
   const setRep = [setText, repText].filter(Boolean).join(' · ')
 
   els.currentTitle.textContent = `${segment.exerciseName}`
@@ -896,7 +1035,7 @@ function updatePlayerUI(): void {
 
   const remainingSessionMs =
     (state.sessionTotalMs || 0) - (state.completedMs + (state.segmentDurationMs - state.remainingMs))
-  els.sessionRemaining.textContent = `Session left: ${formatSeconds(Math.max(0, Math.ceil(remainingSessionMs / 1000)))}`
+  els.sessionRemaining.textContent = `Tempo restante: ${formatSeconds(Math.max(0, Math.ceil(remainingSessionMs / 1000)))}`
 
   const progress =
     ((state.completedMs + (state.segmentDurationMs - state.remainingMs)) / (state.sessionTotalMs || 1)) * 100
@@ -922,7 +1061,7 @@ function setPhasePill(segment: ScheduleSegment | null, phase?: PhaseMeta): void 
   const pill = els.phasePill
   pill.className = 'phase-pill'
   if (!segment) {
-    pill.textContent = phase?.label ?? 'Idle'
+    pill.textContent = phase?.label ?? 'Pronto'
     if (phase) pill.classList.add('rest')
     return
   }
@@ -933,7 +1072,7 @@ function setPhasePill(segment: ScheduleSegment | null, phase?: PhaseMeta): void 
     ? 'hold'
     : 'movement'
   pill.classList.add(typeClass)
-  pill.textContent = phase?.label || segment.phase || 'Stage'
+  pill.textContent = phase?.label || segment.phase || 'Etapa'
 }
 
 function findRepRange(pointer: number): { start: number; end: number } {
@@ -1022,16 +1161,16 @@ function renderPhaseBlocks(segment: ScheduleSegment): void {
 function updateStatusChip(): void {
   els.statusChip.classList.remove('paused', 'done', 'live')
   if (state.status === 'running') {
-    els.statusChip.textContent = 'Running'
+    els.statusChip.textContent = 'Em andamento'
     els.statusChip.classList.add('live')
   } else if (state.status === 'paused') {
-    els.statusChip.textContent = 'Paused'
+    els.statusChip.textContent = 'Pausado'
     els.statusChip.classList.add('paused')
   } else if (state.status === 'done') {
-    els.statusChip.textContent = 'Complete'
+    els.statusChip.textContent = 'Concluído'
     els.statusChip.classList.add('done')
   } else {
-    els.statusChip.textContent = 'Idle'
+    els.statusChip.textContent = 'Pronto'
     els.statusChip.classList.add('live')
   }
   updateButtons()
@@ -1068,13 +1207,15 @@ function renderNextDuringRest(): void {
   if (!next) return
   const nextPhase = phaseMeta[next.phase] ?? { label: next.phase, tone: 0 }
   const nextSetRep = [
-    next.totalSets ? `Set ${next.set}/${next.totalSets}` : '',
-    next.rep ? `Rep ${next.rep}/${next.totalReps}` : ''
+    next.totalSets && next.totalSets > 1 ? `Série ${next.set}/${next.totalSets}` : '',
+    next.totalReps && next.totalReps > 1 && next.rep
+      ? `Repetição ${next.rep}/${next.totalReps}`
+      : ''
   ]
     .filter(Boolean)
     .join(' · ')
 
-  els.currentTitle.textContent = `Next: ${next.exerciseName}`
+  els.currentTitle.textContent = `Próximo: ${next.exerciseName}`
   els.currentDetail.textContent = [nextPhase.label, nextSetRep].filter(Boolean).join(' • ')
 }
 
