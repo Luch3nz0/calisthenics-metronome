@@ -2,7 +2,7 @@ import { trainingPrograms } from './exercises.js'
 import type { Exercise, TrainingGroup, TempoExercise, TimeExercise } from './exercises.js'
 
 type ProgramKey = 'normal' | 'intensive'
-type PhaseKey = 'go' | 'pause' | 'return' | 'rest' | 'setRest' | 'hold'
+type PhaseKey = 'go' | 'pause' | 'return' | 'rest' | 'setRest' | 'hold' | 'prep'
 type SegmentType = 'movement' | 'micro-rest' | 'rest' | 'hold'
 
 type PhaseMeta = { label: string; tone: number }
@@ -68,6 +68,8 @@ const state: State = {
   segmentStartedAt: 0
 }
 
+const PREP_DELAY_SECONDS = 5
+
 function byId<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id)
   if (!el) throw new Error(`Element not found: ${id}`)
@@ -111,7 +113,8 @@ const phaseMeta: Record<PhaseKey, PhaseMeta> = {
   return: { label: 'Return', tone: 900 },
   rest: { label: 'Rest', tone: 520 },
   hold: { label: 'Hold', tone: 760 },
-  setRest: { label: 'Rest', tone: 460 }
+  setRest: { label: 'Rest', tone: 460 },
+  prep: { label: 'Get Ready', tone: 0 }
 }
 
 const routineColors: Record<Exercise['routine'], string> = {
@@ -419,6 +422,24 @@ function createSetSegments(exercise: Exercise, setNumber: number, includeSetRest
   return segs
 }
 
+function createPrepSegment(): ScheduleSegment {
+  return {
+    exerciseName: 'Get Ready',
+    routine: 'Push-Up',
+    set: 0,
+    totalSets: 0,
+    rep: null,
+    totalReps: null,
+    phase: 'prep',
+    type: 'rest',
+    duration: PREP_DELAY_SECONDS,
+    group: null,
+    tempoParts: {
+      hold: PREP_DELAY_SECONDS
+    }
+  }
+}
+
 /**
  * @param {ProgramKey} programKey
  * @returns {ScheduleSegment[]}
@@ -431,12 +452,40 @@ function buildSchedule(programKey: ProgramKey): ScheduleSegment[] {
       const exercises = group.exercises
       const maxSets = Math.max(...exercises.map(ex => ex.sets || 0))
       for (let round = 1; round <= maxSets; round++) {
-        exercises.forEach(exercise => {
+        exercises.forEach((exercise, idx) => {
           if (round > (exercise.sets || 0)) return
-          schedule.push(...createSetSegments(exercise, round, true))
+          const segments = createSetSegments(exercise, round, true)
+          schedule.push(...segments)
+
+          const restBetweenSets = typeof exercise.rest === 'number' ? exercise.rest : 0
+          if (restBetweenSets <= 0) return
+          const hasNextInRound = exercises
+            .slice(idx + 1)
+            .some(nextExercise => round <= (nextExercise.sets || 0))
+          const hasNextRound = round < maxSets
+          const hasNextExercise = hasNextInRound || hasNextRound
+          const endsWithRest = segments[segments.length - 1]?.phase === 'setRest'
+          if (hasNextExercise && !endsWithRest) {
+            schedule.push({
+              exerciseName: exercise.name,
+              routine: exercise.routine,
+              set: round,
+              totalSets: exercise.sets,
+              rep: null,
+              totalReps: null,
+              phase: 'setRest',
+              type: 'rest',
+              duration: restBetweenSets,
+              group: exercise.group || null,
+              tempoParts: {
+                setRest: restBetweenSets
+              }
+            })
+          }
         })
       }
     })
+    if (PREP_DELAY_SECONDS > 0) schedule.unshift(createPrepSegment())
     return schedule
   }
 
@@ -447,6 +496,7 @@ function buildSchedule(programKey: ProgramKey): ScheduleSegment[] {
     }
   })
 
+  if (PREP_DELAY_SECONDS > 0) schedule.unshift(createPrepSegment())
   return schedule
 }
 
@@ -752,7 +802,8 @@ function renderPhaseBlocks(segment: ScheduleSegment): void {
     return: '#8be0ff',
     rest: 'rgba(255,255,255,0.3)',
     setRest: 'rgba(255,255,255,0.3)',
-    hold: 'var(--accent)'
+    hold: 'var(--accent)',
+    prep: 'rgba(255,255,255,0.3)'
   }
 
   let unitCounter = 0
@@ -844,7 +895,7 @@ function clearActiveCards(): void {
 
 function renderNextDuringRest(): void {
   const current = currentSegment()
-  if (!current || current.phase !== 'setRest') return
+  if (!current || (current.phase !== 'setRest' && current.phase !== 'prep')) return
   const next = state.schedule[state.pointer + 1]
   if (!next) return
   const nextPhase = phaseMeta[next.phase] ?? { label: next.phase, tone: 0 }
@@ -902,8 +953,13 @@ function playTone(frequency: number, duration = 0.12, volume = 0.14): void {
  */
 function playCueTone(segment: ScheduleSegment): void {
   const meta = phaseMeta[segment.phase]
-  const freq = meta?.tone || 620
-  playTone(freq)
+  if (!meta) {
+    playTone(620)
+    return
+  }
+  if (meta.tone > 0) {
+    playTone(meta.tone)
+  }
 }
 
 function handleCountdownBeep(): void {

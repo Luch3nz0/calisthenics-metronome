@@ -420,3 +420,13 @@ body:not(.session-mode) .main-grid {
   .main-grid { grid-template-columns: 1fr; }
   .player-main { grid-template-columns: 1fr; }
 }
+
+@media (max-width: 600px) {
+  .sequence-bar {
+    grid-auto-columns: minmax(4px, 1fr);
+    gap: 2px;
+  }
+  .sequence-square {
+    border-radius: 3px;
+  }
+}

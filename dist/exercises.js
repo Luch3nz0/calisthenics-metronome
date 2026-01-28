@@ -1,4 +1,5 @@
 export const exercises = [
+    // beginner
     {
         "name": "Negative Push-Ups",
         "routine": "Push-Up",
@@ -11,7 +12,7 @@ export const exercises = [
         "reps": 8,
         "sets": 3,
         "rest": 120,
-        "level": "beginner"
+        "level": 1,
     },
     {
         "name": "Scapula Push-Ups",
@@ -25,7 +26,7 @@ export const exercises = [
         "reps": 8,
         "sets": 4,
         "rest": 120,
-        "level": "beginner"
+        "level": 1,
     },
     {
         "name": "Plank Hold",
@@ -33,7 +34,7 @@ export const exercises = [
         "time": 30,
         "sets": 4,
         "rest": 120,
-        "level": "beginner"
+        "level": 1,
     },
     {
         "name": "Bent Over Barbell Rows",
@@ -47,7 +48,7 @@ export const exercises = [
         "reps": 15,
         "sets": 3,
         "rest": 180,
-        "level": "beginner"
+        "level": 1,
     },
     {
         "name": "Passive Hang",
@@ -55,7 +56,7 @@ export const exercises = [
         "time": 60,
         "sets": 3,
         "rest": 180,
-        "level": "beginner"
+        "level": 1,
     },
     {
         "name": "Deep Squats",
@@ -69,7 +70,7 @@ export const exercises = [
         "reps": 12,
         "sets": 3,
         "rest": 180,
-        "level": "beginner"
+        "level": 1,
     },
     {
         "name": "Narrow Stance Squats",
@@ -83,7 +84,7 @@ export const exercises = [
         "reps": 12,
         "sets": 3,
         "rest": 180,
-        "level": "beginner"
+        "level": 1,
     },
     {
         "name": "Bodyweight Squats",
@@ -97,8 +98,9 @@ export const exercises = [
         "reps": 15,
         "sets": 3,
         "rest": 180,
-        "level": "beginner"
+        "level": 1,
     }
+    //
 ];
 const normalTraining = [
     "Negative Push-Ups",
@@ -153,8 +155,8 @@ export const trainingPrograms = {
             restMultiplier: 1 / 3,
             exercises: [
                 "Scapula Push-Ups",
-                "Deep Squats",
-                "Passive Hang"
+                "Passive Hang",
+                "Deep Squats"
             ].map(name => withRestAdjustment(name, 1 / 3))
         },
         {

@@ -201,8 +201,8 @@ export const trainingPrograms: TrainingPrograms = {
             restMultiplier: 1 / 3,
             exercises: [
                 "Scapula Push-Ups",
-                "Deep Squats",
-                "Passive Hang"
+                "Passive Hang",
+                "Deep Squats"
             ].map(name => withRestAdjustment(name, 1 / 3))
         },
         {
