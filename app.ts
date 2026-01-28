@@ -77,10 +77,10 @@ type State = {
 const TRAININGS: Training[] = [
   {
     id: 'default-training',
-    name: 'Calistenia corpo inteiro (1h)',
+    name: 'Calistenia corpo inteiro',
     description: 'Barra fixa, barra com anilhas e colchonete.',
     programKey: 'intensive',
-    difficulty: 1
+    difficulty: 2
   },
   {
     id: 'home-training',
@@ -170,9 +170,6 @@ const els = {
   detailTrainingName: byId<HTMLElement>('detail-training-name'),
   detailTrainingDesc: byId<HTMLElement>('detail-training-desc'),
   totalTime: byId<HTMLElement>('total-time'),
-  segmentCount: byId<HTMLElement>('segment-count'),
-  totalSets: byId<HTMLElement>('total-sets'),
-  totalExercises: byId<HTMLElement>('total-exercises'),
   detailExerciseList: byId<HTMLElement>('detail-exercise-list'),
   detailBack: byId<HTMLButtonElement>('detail-back-btn'),
   detailStart: byId<HTMLButtonElement>('detail-start-btn'),
@@ -184,14 +181,14 @@ const els = {
   playerTrainingDesc: byId<HTMLElement>('player-training-desc'),
   start: byId<HTMLButtonElement>('start-btn'),
   pause: byId<HTMLButtonElement>('pause-btn'),
-  reset: byId<HTMLButtonElement>('reset-btn'),
   statusChip: byId<HTMLElement>('status-chip'),
   currentTitle: byId<HTMLElement>('current-title'),
   currentDetail: byId<HTMLElement>('current-detail'),
   currentRemaining: byId<HTMLElement>('current-remaining'),
   phasePill: byId<HTMLElement>('phase-pill'),
   phaseLabel: byId<HTMLElement>('phase-label'),
-  segmentProgress: byId<HTMLElement>('segment-progress-bar'),
+  segmentProgressWrap: byId<HTMLElement>('segment-progress'),
+  segmentProgressBar: byId<HTMLElement>('segment-progress-bar'),
   phaseBlocks: byId<HTMLElement>('phase-blocks'),
   progressBar: byId<HTMLElement>('progress-bar'),
   sessionRemaining: byId<HTMLElement>('session-remaining'),
@@ -368,8 +365,6 @@ function init() {
     }
   })
 
-  els.reset.addEventListener('click', () => resetSession())
-
   if (TRAININGS.length) {
     selectTraining(TRAININGS[0].id)
   }
@@ -395,6 +390,10 @@ function updateHistoryShortcut(): void {
   const hasHistory = historyEntries.length > 0
   els.historyShortcut.hidden = !hasHistory
   els.selectHistory.hidden = !hasHistory
+  if (hasHistory) {
+    const totalXp = getTotalXp(historyEntries)
+    els.historyShortcut.textContent = `Histórico · ${totalXp} XP`
+  }
 }
 
 function getSelectedTraining(): Training {
@@ -420,7 +419,6 @@ function renderTrainingList(): void {
     return `
       <button class="training-card ${active}" type="button" data-training-id="${training.id}">
         <div>
-          <p class="eyebrow">Treino</p>
           <h3>${training.name}</h3>
           ${desc ? `<p class="muted small">${desc}</p>` : ''}
         </div>
@@ -444,16 +442,13 @@ function renderTrainingDetail(): void {
   els.playerTrainingName.textContent = training.name
   els.playerTrainingDesc.textContent = training.description
   els.playerTrainingDesc.hidden = training.description.trim().length === 0
-  els.sessionRemaining.textContent = `Total: ${formatSeconds(summary.totalSeconds)}`
+  els.sessionRemaining.textContent = formatSeconds(summary.totalSeconds)
   renderExerciseList()
 }
 
 function updateDetailStats(training: Training): ProgramSummary {
   const summary = computeProgramSummary(training.programKey)
   els.totalTime.textContent = formatSeconds(summary.totalSeconds)
-  els.totalSets.textContent = String(summary.totalSets)
-  els.totalExercises.textContent = String(summary.exercisesCount)
-  els.segmentCount.textContent = String(summary.segmentCount)
   return summary
 }
 
@@ -875,8 +870,7 @@ function startSession() {
   els.start.textContent = 'Reiniciar'
   els.pause.textContent = 'Pausar'
   els.pause.disabled = false
-  els.reset.disabled = false
-  els.sessionRemaining.textContent = `Tempo restante: ${formatSeconds(Math.ceil(state.sessionTotalMs / 1000))}`
+  els.sessionRemaining.textContent = formatSeconds(Math.ceil(state.sessionTotalMs / 1000))
   setPlayerActive(true)
   startSegment(state.schedule[state.pointer])
 }
@@ -918,16 +912,17 @@ function resetSession(updateChip = true): void {
   els.start.textContent = 'Iniciar'
   els.pause.textContent = 'Pausar'
   els.pause.disabled = true
-  els.reset.disabled = true
   els.currentTitle.textContent = 'Pronto para começar'
   els.currentDetail.textContent = 'Toque em iniciar para começar o treino.'
   els.currentRemaining.textContent = '--'
   els.phaseLabel.textContent = 'Pronto'
   setPhasePill(null)
   els.progressBar.style.width = '0%'
-  if (els.segmentProgress) els.segmentProgress.style.width = '0%'
+  els.segmentProgressBar.style.width = '0%'
+  els.segmentProgressWrap.hidden = true
+  els.phaseBlocks.hidden = true
   const summary = computeProgramSummary(state.programKey)
-  els.sessionRemaining.textContent = `Total: ${formatSeconds(summary.totalSeconds)}`
+  els.sessionRemaining.textContent = formatSeconds(summary.totalSeconds)
   if (updateChip) updateStatusChip()
   clearActiveCards()
   setPlayerActive(false)
@@ -944,7 +939,7 @@ function startSegment(segment: ScheduleSegment): void {
   state.segmentStartedAt = performance.now()
   state.lastCountdownSecond = null
   playCueTone(segment)
-  if (els.segmentProgress) els.segmentProgress.style.width = '0%'
+  els.segmentProgressBar.style.width = '0%'
   updatePlayerUI()
   tick()
 }
@@ -991,9 +986,9 @@ function finishSession() {
   updateStatusChip()
   els.pause.disabled = true
   els.currentRemaining.textContent = '00:00'
-  els.sessionRemaining.textContent = 'Concluído'
+  els.sessionRemaining.textContent = formatSeconds(0)
   els.progressBar.style.width = '100%'
-  if (els.segmentProgress) els.segmentProgress.style.width = '100%'
+  els.segmentProgressBar.style.width = '100%'
   setPhasePill(null, { label: 'Concluído', tone: 0 })
   playTone(1020, 0.25)
 
@@ -1013,8 +1008,10 @@ function updatePlayerUI(): void {
   els.currentRemaining.textContent = remainingSec ? formatSeconds(remainingSec) : '00:00'
 
   if (!segment) {
-    if (els.segmentProgress) els.segmentProgress.style.width = '0%'
-    if (els.phaseBlocks) els.phaseBlocks.innerHTML = ''
+    els.segmentProgressBar.style.width = '0%'
+    els.phaseBlocks.innerHTML = ''
+    els.segmentProgressWrap.hidden = true
+    els.phaseBlocks.hidden = true
     return
   }
 
@@ -1035,16 +1032,18 @@ function updatePlayerUI(): void {
 
   const remainingSessionMs =
     (state.sessionTotalMs || 0) - (state.completedMs + (state.segmentDurationMs - state.remainingMs))
-  els.sessionRemaining.textContent = `Tempo restante: ${formatSeconds(Math.max(0, Math.ceil(remainingSessionMs / 1000)))}`
+  els.sessionRemaining.textContent = formatSeconds(Math.max(0, Math.ceil(remainingSessionMs / 1000)))
 
   const progress =
     ((state.completedMs + (state.segmentDurationMs - state.remainingMs)) / (state.sessionTotalMs || 1)) * 100
   els.progressBar.style.width = `${Math.min(100, progress)}%`
   const segmentProgress =
     ((state.segmentDurationMs - state.remainingMs) / (state.segmentDurationMs || 1)) * 100
-  if (els.segmentProgress) {
-    els.segmentProgress.style.width = `${Math.min(100, segmentProgress)}%`
-  }
+  els.segmentProgressBar.style.width = `${Math.min(100, segmentProgress)}%`
+
+  const showRestProgress = segment.type === 'rest'
+  els.segmentProgressWrap.hidden = !showRestProgress
+  els.phaseBlocks.hidden = showRestProgress
 
   highlightActiveCard(segment.exerciseName)
   renderNextDuringRest()

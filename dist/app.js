@@ -2,10 +2,10 @@ import { trainingPrograms } from './exercises.js';
 const TRAININGS = [
     {
         id: 'default-training',
-        name: 'Calistenia corpo inteiro (1h)',
+        name: 'Calistenia corpo inteiro',
         description: 'Barra fixa, barra com anilhas e colchonete.',
         programKey: 'intensive',
-        difficulty: 1
+        difficulty: 2
     },
     {
         id: 'home-training',
@@ -91,9 +91,6 @@ const els = {
     detailTrainingName: byId('detail-training-name'),
     detailTrainingDesc: byId('detail-training-desc'),
     totalTime: byId('total-time'),
-    segmentCount: byId('segment-count'),
-    totalSets: byId('total-sets'),
-    totalExercises: byId('total-exercises'),
     detailExerciseList: byId('detail-exercise-list'),
     detailBack: byId('detail-back-btn'),
     detailStart: byId('detail-start-btn'),
@@ -105,14 +102,14 @@ const els = {
     playerTrainingDesc: byId('player-training-desc'),
     start: byId('start-btn'),
     pause: byId('pause-btn'),
-    reset: byId('reset-btn'),
     statusChip: byId('status-chip'),
     currentTitle: byId('current-title'),
     currentDetail: byId('current-detail'),
     currentRemaining: byId('current-remaining'),
     phasePill: byId('phase-pill'),
     phaseLabel: byId('phase-label'),
-    segmentProgress: byId('segment-progress-bar'),
+    segmentProgressWrap: byId('segment-progress'),
+    segmentProgressBar: byId('segment-progress-bar'),
     phaseBlocks: byId('phase-blocks'),
     progressBar: byId('progress-bar'),
     sessionRemaining: byId('session-remaining'),
@@ -267,7 +264,6 @@ function init() {
             resumeSession();
         }
     });
-    els.reset.addEventListener('click', () => resetSession());
     if (TRAININGS.length) {
         selectTraining(TRAININGS[0].id);
     }
@@ -290,6 +286,10 @@ function updateHistoryShortcut() {
     const hasHistory = historyEntries.length > 0;
     els.historyShortcut.hidden = !hasHistory;
     els.selectHistory.hidden = !hasHistory;
+    if (hasHistory) {
+        const totalXp = getTotalXp(historyEntries);
+        els.historyShortcut.textContent = `Histórico · ${totalXp} XP`;
+    }
 }
 function getSelectedTraining() {
     const training = TRAININGS.find(item => item.id === state.selectedTrainingId) ?? TRAININGS[0];
@@ -313,7 +313,6 @@ function renderTrainingList() {
         return `
       <button class="training-card ${active}" type="button" data-training-id="${training.id}">
         <div>
-          <p class="eyebrow">Treino</p>
           <h3>${training.name}</h3>
           ${desc ? `<p class="muted small">${desc}</p>` : ''}
         </div>
@@ -335,15 +334,12 @@ function renderTrainingDetail() {
     els.playerTrainingName.textContent = training.name;
     els.playerTrainingDesc.textContent = training.description;
     els.playerTrainingDesc.hidden = training.description.trim().length === 0;
-    els.sessionRemaining.textContent = `Total: ${formatSeconds(summary.totalSeconds)}`;
+    els.sessionRemaining.textContent = formatSeconds(summary.totalSeconds);
     renderExerciseList();
 }
 function updateDetailStats(training) {
     const summary = computeProgramSummary(training.programKey);
     els.totalTime.textContent = formatSeconds(summary.totalSeconds);
-    els.totalSets.textContent = String(summary.totalSets);
-    els.totalExercises.textContent = String(summary.exercisesCount);
-    els.segmentCount.textContent = String(summary.segmentCount);
     return summary;
 }
 function renderExerciseList() {
@@ -735,8 +731,7 @@ function startSession() {
     els.start.textContent = 'Reiniciar';
     els.pause.textContent = 'Pausar';
     els.pause.disabled = false;
-    els.reset.disabled = false;
-    els.sessionRemaining.textContent = `Tempo restante: ${formatSeconds(Math.ceil(state.sessionTotalMs / 1000))}`;
+    els.sessionRemaining.textContent = formatSeconds(Math.ceil(state.sessionTotalMs / 1000));
     setPlayerActive(true);
     startSegment(state.schedule[state.pointer]);
 }
@@ -778,17 +773,17 @@ function resetSession(updateChip = true) {
     els.start.textContent = 'Iniciar';
     els.pause.textContent = 'Pausar';
     els.pause.disabled = true;
-    els.reset.disabled = true;
     els.currentTitle.textContent = 'Pronto para começar';
     els.currentDetail.textContent = 'Toque em iniciar para começar o treino.';
     els.currentRemaining.textContent = '--';
     els.phaseLabel.textContent = 'Pronto';
     setPhasePill(null);
     els.progressBar.style.width = '0%';
-    if (els.segmentProgress)
-        els.segmentProgress.style.width = '0%';
+    els.segmentProgressBar.style.width = '0%';
+    els.segmentProgressWrap.hidden = true;
+    els.phaseBlocks.hidden = true;
     const summary = computeProgramSummary(state.programKey);
-    els.sessionRemaining.textContent = `Total: ${formatSeconds(summary.totalSeconds)}`;
+    els.sessionRemaining.textContent = formatSeconds(summary.totalSeconds);
     if (updateChip)
         updateStatusChip();
     clearActiveCards();
@@ -804,8 +799,7 @@ function startSegment(segment) {
     state.segmentStartedAt = performance.now();
     state.lastCountdownSecond = null;
     playCueTone(segment);
-    if (els.segmentProgress)
-        els.segmentProgress.style.width = '0%';
+    els.segmentProgressBar.style.width = '0%';
     updatePlayerUI();
     tick();
 }
@@ -844,10 +838,9 @@ function finishSession() {
     updateStatusChip();
     els.pause.disabled = true;
     els.currentRemaining.textContent = '00:00';
-    els.sessionRemaining.textContent = 'Concluído';
+    els.sessionRemaining.textContent = formatSeconds(0);
     els.progressBar.style.width = '100%';
-    if (els.segmentProgress)
-        els.segmentProgress.style.width = '100%';
+    els.segmentProgressBar.style.width = '100%';
     setPhasePill(null, { label: 'Concluído', tone: 0 });
     playTone(1020, 0.25);
     const entry = recordCompletion();
@@ -863,10 +856,10 @@ function updatePlayerUI() {
     const remainingSec = Math.max(0, Math.ceil(state.remainingMs / 1000));
     els.currentRemaining.textContent = remainingSec ? formatSeconds(remainingSec) : '00:00';
     if (!segment) {
-        if (els.segmentProgress)
-            els.segmentProgress.style.width = '0%';
-        if (els.phaseBlocks)
-            els.phaseBlocks.innerHTML = '';
+        els.segmentProgressBar.style.width = '0%';
+        els.phaseBlocks.innerHTML = '';
+        els.segmentProgressWrap.hidden = true;
+        els.phaseBlocks.hidden = true;
         return;
     }
     const phase = phaseMeta[segment.phase] ?? { label: segment.phase, tone: 0 };
@@ -881,13 +874,14 @@ function updatePlayerUI() {
     setPhasePill(segment, phase);
     renderPhaseBlocks(segment);
     const remainingSessionMs = (state.sessionTotalMs || 0) - (state.completedMs + (state.segmentDurationMs - state.remainingMs));
-    els.sessionRemaining.textContent = `Tempo restante: ${formatSeconds(Math.max(0, Math.ceil(remainingSessionMs / 1000)))}`;
+    els.sessionRemaining.textContent = formatSeconds(Math.max(0, Math.ceil(remainingSessionMs / 1000)));
     const progress = ((state.completedMs + (state.segmentDurationMs - state.remainingMs)) / (state.sessionTotalMs || 1)) * 100;
     els.progressBar.style.width = `${Math.min(100, progress)}%`;
     const segmentProgress = ((state.segmentDurationMs - state.remainingMs) / (state.segmentDurationMs || 1)) * 100;
-    if (els.segmentProgress) {
-        els.segmentProgress.style.width = `${Math.min(100, segmentProgress)}%`;
-    }
+    els.segmentProgressBar.style.width = `${Math.min(100, segmentProgress)}%`;
+    const showRestProgress = segment.type === 'rest';
+    els.segmentProgressWrap.hidden = !showRestProgress;
+    els.phaseBlocks.hidden = showRestProgress;
     highlightActiveCard(segment.exerciseName);
     renderNextDuringRest();
 }
