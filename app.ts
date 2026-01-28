@@ -121,7 +121,6 @@ const els = {
   selectHistory: byId<HTMLButtonElement>('select-history-btn'),
   detailTrainingName: byId<HTMLElement>('detail-training-name'),
   detailTrainingDesc: byId<HTMLElement>('detail-training-desc'),
-  detailTrainingBadge: byId<HTMLElement>('detail-training-badge'),
   totalTime: byId<HTMLElement>('total-time'),
   segmentCount: byId<HTMLElement>('segment-count'),
   totalSets: byId<HTMLElement>('total-sets'),
@@ -359,7 +358,6 @@ function renderTrainingList(): void {
         <div class="training-stat">
           <span class="label">Duration</span>
           <span class="value">${formatSeconds(summary.totalSeconds)}</span>
-          <span class="badge">Intensive</span>
         </div>
       </button>
     `
@@ -374,7 +372,6 @@ function renderTrainingDetail(): void {
   els.detailTrainingName.textContent = training.name
   els.detailTrainingDesc.textContent = training.description
   els.detailTrainingDesc.hidden = training.description.trim().length === 0
-  els.detailTrainingBadge.textContent = 'Intensive'
   els.playerTrainingName.textContent = training.name
   els.playerTrainingDesc.textContent = training.description
   els.playerTrainingDesc.hidden = training.description.trim().length === 0

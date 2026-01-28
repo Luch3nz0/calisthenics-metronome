@@ -48,7 +48,6 @@ const els = {
     selectHistory: byId('select-history-btn'),
     detailTrainingName: byId('detail-training-name'),
     detailTrainingDesc: byId('detail-training-desc'),
-    detailTrainingBadge: byId('detail-training-badge'),
     totalTime: byId('total-time'),
     segmentCount: byId('segment-count'),
     totalSets: byId('total-sets'),
@@ -261,7 +260,6 @@ function renderTrainingList() {
         <div class="training-stat">
           <span class="label">Duration</span>
           <span class="value">${formatSeconds(summary.totalSeconds)}</span>
-          <span class="badge">Intensive</span>
         </div>
       </button>
     `;
@@ -274,7 +272,6 @@ function renderTrainingDetail() {
     els.detailTrainingName.textContent = training.name;
     els.detailTrainingDesc.textContent = training.description;
     els.detailTrainingDesc.hidden = training.description.trim().length === 0;
-    els.detailTrainingBadge.textContent = 'Intensive';
     els.playerTrainingName.textContent = training.name;
     els.playerTrainingDesc.textContent = training.description;
     els.playerTrainingDesc.hidden = training.description.trim().length === 0;
