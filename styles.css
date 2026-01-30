@@ -165,9 +165,10 @@ p { margin: 0; color: var(--muted); }
 }
 .training-stat {
   display: grid;
-  justify-items: end;
+  justify-items: center;
   gap: 4px;
   min-width: 120px;
+  text-align: center;
 }
 
 .quick-stats {
@@ -240,13 +241,42 @@ p { margin: 0; color: var(--muted); }
   display: grid;
   gap: 12px;
 }
-.player-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
 .player-header {
-  align-items: flex-start;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.player-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.player-title {
+  font-size: clamp(18px, 3vw, 24px);
+}
+.status-indicator {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  border: 1px solid var(--stroke);
+  background: rgba(255, 255, 255, 0.04);
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+.status-icon {
+  width: 18px;
+  height: 18px;
+  display: none;
+}
+.status-indicator.is-running .status-play,
+.status-indicator.is-idle .status-play {
+  display: block;
+}
+.status-indicator.is-paused .status-pause {
+  display: block;
+  color: var(--accent-2);
 }
 .player-main {
   display: grid;
@@ -283,6 +313,11 @@ p { margin: 0; color: var(--muted); }
   display: grid;
   gap: 8px;
   justify-items: center;
+}
+.time-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .phase-label {
   font-size: 12px;
@@ -336,15 +371,16 @@ p { margin: 0; color: var(--muted); }
 }
 .progress-row {
   display: flex;
+  flex-direction: column;
   align-items: center;
   gap: 12px;
 }
 .progress-row .progress {
-  flex: 1;
+  width: 100%;
 }
 .progress-row .session-remaining {
-  min-width: 84px;
-  text-align: right;
+  min-width: 0;
+  text-align: center;
   padding: 6px 10px;
 }
 
@@ -477,7 +513,7 @@ p { margin: 0; color: var(--muted); }
 .footer-actions.center {
   justify-content: center;
 }
-.footer-actions .primary.wide {
+.footer-actions .wide {
   flex: 1;
 }
 
@@ -608,7 +644,7 @@ p { margin: 0; color: var(--muted); }
 }
 .complete-subtitle {
   text-align: center;
-  font-size: 14px;
+  font-size: clamp(16px, 2.4vw, 20px);
   color: var(--muted);
 }
 .complete-stats {
@@ -644,14 +680,61 @@ p { margin: 0; color: var(--muted); }
   color: #ffe8a1;
 }
 
+.neon-history {
+  border-color: rgba(63, 169, 245, 0.7);
+  box-shadow: 0 0 18px rgba(63, 169, 245, 0.35);
+  color: #d9f1ff;
+  background: rgba(63, 169, 245, 0.12);
+}
+
+.panel-header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.panel-header.simple {
+  grid-template-columns: auto;
+}
+.header-spacer {
+  width: 36px;
+}
+
+.icon-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid var(--stroke);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.icon-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.music-icon {
+  width: 18px;
+  height: 18px;
+  display: none;
+}
+.icon-button.is-muted .music-off {
+  display: block;
+}
+.icon-button:not(.is-muted) .music-on {
+  display: block;
+}
+
 @media (max-width: 960px) {
   body { --page-pad: 14px; }
   .topbar { flex-direction: column; align-items: flex-start; }
   .player-main { grid-template-columns: 1fr; }
   .training-card { grid-template-columns: 1fr; }
-  .training-stat { justify-items: start; }
-  .progress-row { flex-direction: column; align-items: flex-start; }
-  .progress-row .session-remaining { text-align: left; }
+  .progress-row { align-items: center; }
 }
 
 @media (max-width: 600px) {

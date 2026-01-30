@@ -20,7 +20,7 @@
             <div class="heading-block">
               <h2 class="select-title">Selecionar treino</h2>
             </div>
-            <button class="ghost small" id="history-shortcut" hidden>Histórico</button>
+            <button class="ghost small neon-history" id="history-shortcut" hidden>Histórico</button>
           </div>
           <div class="training-list" id="training-list"></div>
         </div>
@@ -31,11 +31,17 @@
 
       <section class="screen" data-screen="details" hidden>
         <div class="panel">
-          <div class="row between">
+          <div class="panel-header">
+            <button class="icon-button" id="detail-back-btn" aria-label="Voltar para treinos">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
             <div class="detail-heading">
               <h2 id="detail-training-name">Treino</h2>
               <p class="muted small" id="detail-training-desc"></p>
             </div>
+            <div class="header-spacer" aria-hidden="true"></div>
           </div>
           <div class="quick-stats centered">
             <div>
@@ -51,14 +57,20 @@
           </div>
           <div class="exercise-grid scroll-list" id="detail-exercise-list"></div>
         </div>
-        <div class="footer-actions">
-          <button class="ghost" id="detail-back-btn">Voltar</button>
-          <button class="primary wide" id="detail-start-btn">Iniciar treino</button>
+        <div class="footer-actions center">
+          <button class="primary" id="detail-start-btn">Iniciar treino</button>
         </div>
       </section>
 
       <section class="screen" data-screen="exercise" hidden>
         <div class="panel exercise-panel">
+          <div class="panel-header simple">
+            <button class="icon-button" id="exercise-back-btn" aria-label="Voltar para treino selecionado">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </div>
           <p class="eyebrow center-text">Detalhes do exercício</p>
           <h2 class="center-text" id="exercise-detail-title">Exercício</h2>
           <p class="muted small center-text" id="exercise-detail-meta"></p>
@@ -71,25 +83,27 @@
             <p class="muted" id="exercise-detail-tips"></p>
           </div>
         </div>
-        <div class="footer-actions single">
-          <button class="ghost" id="exercise-back-btn">Voltar para exercícios</button>
-        </div>
       </section>
 
       <section class="screen" data-screen="metronome" hidden>
         <section class="panel player" id="player-panel">
-          <div class="row between player-header">
-            <div>
-              <p class="eyebrow">Nome do treino</p>
-              <h2 id="player-training-name">Treino</h2>
-              <p class="muted small" id="player-training-desc"></p>
+          <div class="player-header">
+            <div class="player-title-row">
+              <button class="icon-button" id="metronome-back-btn" aria-label="Voltar para treino selecionado">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <h2 class="player-title" id="player-training-name">Treino</h2>
             </div>
-            <div class="control-stack">
-              <div class="chip live" id="status-chip">Pronto</div>
+            <div class="status-indicator" id="status-chip" aria-label="Status do treino">
+              <svg class="status-icon status-play" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 5v14l11-7z" fill="currentColor" />
+              </svg>
+              <svg class="status-icon status-pause" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 5h4v14H6zm8 0h4v14h-4z" fill="currentColor" />
+              </svg>
             </div>
-          </div>
-          <div class="player-top">
-            <div class="phase-pill" id="phase-pill">Pronto</div>
           </div>
           <div class="player-placeholder" id="player-placeholder">
             <div>
@@ -102,7 +116,6 @@
             <div class="exercise-block">
               <h3 id="current-title">Selecione um treino e toque em iniciar</h3>
               <div class="exercise-meta">
-                <span class="phase-label" id="phase-label">Pronto</span>
                 <span class="muted" id="current-detail">Todas as instruções aparecerão aqui.</span>
               </div>
             </div>
@@ -111,7 +124,10 @@
               <p class="muted">Vídeo em breve.</p>
             </div>
             <div class="time-stack">
-              <div class="time" id="current-remaining">--</div>
+              <div class="time-header">
+                <div class="phase-pill" id="phase-pill">Pronto</div>
+                <div class="time" id="current-remaining">--</div>
+              </div>
               <div class="segment-progress" id="segment-progress">
                 <div id="segment-progress-bar"></div>
               </div>
@@ -126,9 +142,18 @@
           </div>
         </section>
         <div class="footer-actions metronome-actions">
-          <button class="ghost" id="metronome-back-btn">Voltar</button>
-          <button class="ghost large" id="pause-btn" disabled>Pausar</button>
           <button class="primary" id="start-btn">Iniciar</button>
+          <button class="ghost large" id="pause-btn" disabled>Pausar</button>
+          <button class="ghost icon-button" id="music-toggle-btn" aria-label="Alternar música" aria-pressed="false">
+            <svg class="music-icon music-on" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 17a2 2 0 1 1-1-1.73V6l9-2v8.5a2 2 0 1 1-1-1.73V5.7L10 7v8a2 2 0 0 1-1 1.73z" fill="currentColor" />
+            </svg>
+            <svg class="music-icon music-off" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 4l16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              <path d="M9 17a2 2 0 1 1-1-1.73V6l6-1.33" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M16 9.3V5.7l-2.7.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
         </div>
       </section>
 
@@ -136,7 +161,7 @@
         <div class="panel complete-panel">
           <h2 class="complete-title">Treino concluído!</h2>
           <p class="muted complete-subtitle">
-            Parabéns por concluir a sessão de <span id="complete-training-name"></span>! Continue com o ótimo trabalho!
+            Congratulations on your finishing the <span id="complete-training-name"></span> session! Keep the great work!
           </p>
           <div class="quick-stats complete-stats">
             <div class="stat-card neon-blue">
@@ -154,7 +179,7 @@
           </div>
         </div>
         <div class="footer-actions">
-          <button class="ghost" id="complete-to-selection">Voltar para treinos</button>
+          <button class="ghost wide" id="complete-to-selection">Voltar para treinos</button>
           <button class="primary wide" id="complete-to-history">Ver histórico</button>
         </div>
       </section>
@@ -169,8 +194,8 @@
           </div>
           <div class="history-list" id="history-list"></div>
         </div>
-        <div class="footer-actions single">
-          <button class="ghost" id="history-back-btn">Voltar para seleção</button>
+        <div class="footer-actions center">
+          <button class="ghost large" id="history-back-btn">Voltar para seleção</button>
         </div>
       </section>
     </main>

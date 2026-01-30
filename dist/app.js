@@ -4,6 +4,7 @@ const TRAININGS = [
         id: 'default-training',
         name: 'Calistenia corpo inteiro',
         description: 'Barra fixa, barra com anilhas e colchonete.',
+        equipment: 'Barra fixa, barra com anilhas e colchonete.',
         programKey: 'intensive',
         difficulty: 2
     },
@@ -11,6 +12,7 @@ const TRAININGS = [
         id: 'home-training',
         name: 'Treino em casa',
         description: '45s de exercício · 15s de pausa · sem equipamento.',
+        equipment: 'Sem equipamento.',
         programKey: 'home',
         difficulty: 1
     },
@@ -18,6 +20,7 @@ const TRAININGS = [
         id: 'core-training',
         name: 'Abdômen 8 min',
         description: '60s por exercício · sem pausa.',
+        equipment: 'Sem equipamento.',
         programKey: 'core',
         difficulty: 1
     },
@@ -25,6 +28,7 @@ const TRAININGS = [
         id: 'stretch-training',
         name: 'Alongamento',
         description: '30s por exercício · sem pausa.',
+        equipment: 'Sem equipamento.',
         programKey: 'stretch',
         difficulty: 1
     },
@@ -32,6 +36,7 @@ const TRAININGS = [
         id: 'flash-training',
         name: 'Treino iniciante flash',
         description: '10 movimentos de 60s + aquecimento · pausa de 2s.',
+        equipment: 'Sem equipamento.',
         programKey: 'flash',
         difficulty: 1
     },
@@ -39,6 +44,7 @@ const TRAININGS = [
         id: 'test-training-easy',
         name: 'Treino teste curto (fácil)',
         description: 'Sequência curta para validar telas · XP x1.',
+        equipment: 'Sem equipamento.',
         programKey: 'test',
         difficulty: 1
     },
@@ -46,6 +52,7 @@ const TRAININGS = [
         id: 'test-training-medium',
         name: 'Treino teste curto (intermediário)',
         description: 'Sequência curta para validar telas · XP x2.',
+        equipment: 'Sem equipamento.',
         programKey: 'test',
         difficulty: 2
     },
@@ -53,6 +60,7 @@ const TRAININGS = [
         id: 'test-training-hard',
         name: 'Treino teste curto (difícil)',
         description: 'Sequência curta para validar telas · XP x3.',
+        equipment: 'Sem equipamento.',
         programKey: 'test',
         difficulty: 3
     }
@@ -74,8 +82,18 @@ const state = {
     lastCountdownSecond: null,
     audioCtx: null,
     sessionTotalMs: 0,
-    segmentStartedAt: 0
+    segmentStartedAt: 0,
+    musicMuted: false
 };
+const MUSIC_TRACKS = [
+    'music/drift-phonk-200108.mp3',
+    'music/fresh-457883.mp3',
+    'music/she-hates-my-reps-464309.mp3',
+    'music/summer-trip-audio-oficial-243190.mp3',
+    'music/trap-future-bass-royalty-free-music-167020.mp3'
+];
+let musicPlayer = null;
+let lastMusicIndex = null;
 let historyEntries = [];
 function byId(id) {
     const el = document.getElementById(id);
@@ -99,15 +117,14 @@ const els = {
     exerciseDetailTips: byId('exercise-detail-tips'),
     exerciseBack: byId('exercise-back-btn'),
     playerTrainingName: byId('player-training-name'),
-    playerTrainingDesc: byId('player-training-desc'),
     start: byId('start-btn'),
     pause: byId('pause-btn'),
     statusChip: byId('status-chip'),
+    musicToggle: byId('music-toggle-btn'),
     currentTitle: byId('current-title'),
     currentDetail: byId('current-detail'),
     currentRemaining: byId('current-remaining'),
     phasePill: byId('phase-pill'),
-    phaseLabel: byId('phase-label'),
     segmentProgressWrap: byId('segment-progress'),
     segmentProgressBar: byId('segment-progress-bar'),
     phaseBlocks: byId('phase-blocks'),
@@ -264,11 +281,15 @@ function init() {
             resumeSession();
         }
     });
+    els.musicToggle.addEventListener('click', () => {
+        setMusicMuted(!state.musicMuted);
+    });
     if (TRAININGS.length) {
         selectTraining(TRAININGS[0].id);
     }
     renderHistory();
     updateHistoryShortcut();
+    updateMusicToggle();
     showScreen('select');
 }
 function showScreen(screen) {
@@ -314,6 +335,7 @@ function renderTrainingList() {
       <button class="training-card ${active}" type="button" data-training-id="${training.id}">
         <div>
           <h3>${training.name}</h3>
+          <p class="muted small">equipamento: ${training.equipment}</p>
           ${desc ? `<p class="muted small">${desc}</p>` : ''}
         </div>
         <div class="training-stat">
@@ -332,8 +354,6 @@ function renderTrainingDetail() {
     els.detailTrainingDesc.textContent = training.description;
     els.detailTrainingDesc.hidden = training.description.trim().length === 0;
     els.playerTrainingName.textContent = training.name;
-    els.playerTrainingDesc.textContent = training.description;
-    els.playerTrainingDesc.hidden = training.description.trim().length === 0;
     els.sessionRemaining.textContent = formatSeconds(summary.totalSeconds);
     renderExerciseList();
 }
@@ -733,6 +753,7 @@ function startSession() {
     els.pause.disabled = false;
     els.sessionRemaining.textContent = formatSeconds(Math.ceil(state.sessionTotalMs / 1000));
     setPlayerActive(true);
+    startMusic();
     startSegment(state.schedule[state.pointer]);
 }
 function pauseSession() {
@@ -742,6 +763,7 @@ function pauseSession() {
     state.status = 'paused';
     updateStatusChip();
     els.pause.textContent = 'Retomar';
+    pauseMusic();
 }
 function resumeSession() {
     if (!state.schedule.length)
@@ -749,6 +771,7 @@ function resumeSession() {
     state.status = 'running';
     updateStatusChip();
     els.pause.textContent = 'Pausar';
+    resumeMusic();
     const elapsedBeforePause = state.segmentDurationMs - state.remainingMs;
     state.segmentStartedAt = performance.now() - elapsedBeforePause;
     state.lastCountdownSecond = null;
@@ -776,7 +799,6 @@ function resetSession(updateChip = true) {
     els.currentTitle.textContent = 'Pronto para começar';
     els.currentDetail.textContent = 'Toque em iniciar para começar o treino.';
     els.currentRemaining.textContent = '--';
-    els.phaseLabel.textContent = 'Pronto';
     setPhasePill(null);
     els.progressBar.style.width = '0%';
     els.segmentProgressBar.style.width = '0%';
@@ -788,6 +810,7 @@ function resetSession(updateChip = true) {
         updateStatusChip();
     clearActiveCards();
     setPlayerActive(false);
+    pauseMusic(true);
 }
 function setPlayerActive(isActive) {
     els.playerMain.hidden = !isActive;
@@ -843,6 +866,7 @@ function finishSession() {
     els.segmentProgressBar.style.width = '100%';
     setPhasePill(null, { label: 'Concluído', tone: 0 });
     playTone(1020, 0.25);
+    pauseMusic(true);
     const entry = recordCompletion();
     renderCompletion(entry);
     renderHistory();
@@ -870,7 +894,6 @@ function updatePlayerUI() {
     const setRep = [setText, repText].filter(Boolean).join(' · ');
     els.currentTitle.textContent = `${segment.exerciseName}`;
     els.currentDetail.textContent = setRep || '';
-    els.phaseLabel.textContent = phase.label || '';
     setPhasePill(segment, phase);
     renderPhaseBlocks(segment);
     const remainingSessionMs = (state.sessionTotalMs || 0) - (state.completedMs + (state.segmentDurationMs - state.remainingMs));
@@ -989,22 +1012,22 @@ function renderPhaseBlocks(segment) {
     els.phaseBlocks.innerHTML = html;
 }
 function updateStatusChip() {
-    els.statusChip.classList.remove('paused', 'done', 'live');
+    els.statusChip.classList.remove('is-paused', 'is-running', 'is-idle');
     if (state.status === 'running') {
-        els.statusChip.textContent = 'Em andamento';
-        els.statusChip.classList.add('live');
+        els.statusChip.classList.add('is-running');
+        els.statusChip.setAttribute('aria-label', 'Em andamento');
     }
     else if (state.status === 'paused') {
-        els.statusChip.textContent = 'Pausado';
-        els.statusChip.classList.add('paused');
+        els.statusChip.classList.add('is-paused');
+        els.statusChip.setAttribute('aria-label', 'Pausado');
     }
     else if (state.status === 'done') {
-        els.statusChip.textContent = 'Concluído';
-        els.statusChip.classList.add('done');
+        els.statusChip.classList.add('is-idle');
+        els.statusChip.setAttribute('aria-label', 'Concluído');
     }
     else {
-        els.statusChip.textContent = 'Pronto';
-        els.statusChip.classList.add('live');
+        els.statusChip.classList.add('is-idle');
+        els.statusChip.setAttribute('aria-label', 'Pronto');
     }
     updateButtons();
 }
@@ -1099,4 +1122,75 @@ function handleCountdownBeep() {
         state.lastCountdownSecond = remainingSec;
         playTone(remainingSec === 1 ? 980 : 620, 0.08, 0.12);
     }
+}
+function ensureMusicPlayer() {
+    if (!MUSIC_TRACKS.length)
+        return null;
+    if (!musicPlayer) {
+        const audio = new Audio();
+        audio.preload = 'auto';
+        audio.volume = 0.5;
+        audio.addEventListener('ended', () => {
+            if (state.status === 'running') {
+                playRandomTrack();
+            }
+        });
+        musicPlayer = audio;
+    }
+    return musicPlayer;
+}
+function pickRandomTrack() {
+    if (!MUSIC_TRACKS.length)
+        return null;
+    let idx = Math.floor(Math.random() * MUSIC_TRACKS.length);
+    if (MUSIC_TRACKS.length > 1 && idx === lastMusicIndex) {
+        idx = (idx + 1) % MUSIC_TRACKS.length;
+    }
+    lastMusicIndex = idx;
+    return MUSIC_TRACKS[idx];
+}
+function playRandomTrack() {
+    const audio = ensureMusicPlayer();
+    const track = pickRandomTrack();
+    if (!audio || !track)
+        return;
+    audio.src = track;
+    audio.currentTime = 0;
+    audio.muted = state.musicMuted;
+    if (!state.musicMuted) {
+        void audio.play().catch(() => undefined);
+    }
+}
+function startMusic() {
+    const audio = ensureMusicPlayer();
+    if (!audio)
+        return;
+    playRandomTrack();
+}
+function pauseMusic(reset = false) {
+    if (!musicPlayer)
+        return;
+    musicPlayer.pause();
+    if (reset) {
+        musicPlayer.currentTime = 0;
+    }
+}
+function resumeMusic() {
+    if (!musicPlayer || state.musicMuted)
+        return;
+    void musicPlayer.play().catch(() => undefined);
+}
+function updateMusicToggle() {
+    els.musicToggle.classList.toggle('is-muted', state.musicMuted);
+    els.musicToggle.setAttribute('aria-pressed', String(state.musicMuted));
+}
+function setMusicMuted(muted) {
+    state.musicMuted = muted;
+    if (musicPlayer) {
+        musicPlayer.muted = muted;
+    }
+    if (!muted && state.status === 'running') {
+        resumeMusic();
+    }
+    updateMusicToggle();
 }
