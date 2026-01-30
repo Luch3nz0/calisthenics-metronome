@@ -41,11 +41,17 @@ type ProgramSummary = {
 
 type StateStatus = 'idle' | 'running' | 'paused' | 'done'
 
+type TrainingVideo = {
+  src: string
+  orientation: 'portrait' | 'landscape'
+}
+
 type Training = {
   id: string
   name: string
   description: string
   equipment: string
+  video?: TrainingVideo
   programKey: ProgramKey
   difficulty: number
 }
@@ -130,6 +136,10 @@ const TRAININGS: Training[] = [
     name: 'Treino teste curto (intermediário)',
     description: 'Sequência curta para validar telas · XP x2.',
     equipment: 'Sem equipamento.',
+    video: {
+      src: 'videos/portrait.MOV',
+      orientation: 'portrait'
+    },
     programKey: 'test',
     difficulty: 2
   },
@@ -138,6 +148,10 @@ const TRAININGS: Training[] = [
     name: 'Treino teste curto (difícil)',
     description: 'Sequência curta para validar telas · XP x3.',
     equipment: 'Sem equipamento.',
+    video: {
+      src: 'videos/landscape.MOV',
+      orientation: 'landscape'
+    },
     programKey: 'test',
     difficulty: 3
   }
@@ -164,6 +178,9 @@ const state: State = {
   segmentStartedAt: 0,
   musicMuted: false
 }
+
+const METRONOME_VOLUME = 0.14
+const MUSIC_VOLUME = METRONOME_VOLUME / 1.2
 
 const MUSIC_TRACKS = [
   'music/drift-phonk-200108.mp3',
@@ -199,11 +216,15 @@ const els = {
   exerciseDetailMeta: byId<HTMLElement>('exercise-detail-meta'),
   exerciseDetailTips: byId<HTMLElement>('exercise-detail-tips'),
   exerciseBack: byId<HTMLButtonElement>('exercise-back-btn'),
+  exerciseVideo: byId<HTMLVideoElement>('exercise-video'),
+  exerciseVideoPlaceholder: byId<HTMLElement>('exercise-video-placeholder'),
   playerTrainingName: byId<HTMLElement>('player-training-name'),
   start: byId<HTMLButtonElement>('start-btn'),
   pause: byId<HTMLButtonElement>('pause-btn'),
   statusChip: byId<HTMLElement>('status-chip'),
   musicToggle: byId<HTMLButtonElement>('music-toggle-btn'),
+  playerVideo: byId<HTMLVideoElement>('player-video'),
+  playerVideoPlaceholder: byId<HTMLElement>('player-video-placeholder'),
   currentTitle: byId<HTMLElement>('current-title'),
   currentDetail: byId<HTMLElement>('current-detail'),
   currentRemaining: byId<HTMLElement>('current-remaining'),
@@ -441,13 +462,11 @@ function renderTrainingList(): void {
   const cards = TRAININGS.map(training => {
     const summary = computeProgramSummary(training.programKey)
     const active = training.id === state.selectedTrainingId ? 'active' : ''
-    const desc = training.description.trim()
     return `
       <button class="training-card ${active}" type="button" data-training-id="${training.id}">
         <div>
           <h3>${training.name}</h3>
           <p class="muted small">equipamento: ${training.equipment}</p>
-          ${desc ? `<p class="muted small">${desc}</p>` : ''}
         </div>
         <div class="training-stat">
           <span class="label">Duração</span>
@@ -464,11 +483,43 @@ function renderTrainingDetail(): void {
   const training = getSelectedTraining()
   const summary = updateDetailStats(training)
   els.detailTrainingName.textContent = training.name
-  els.detailTrainingDesc.textContent = training.description
-  els.detailTrainingDesc.hidden = training.description.trim().length === 0
+  els.detailTrainingDesc.textContent = training.equipment
+  els.detailTrainingDesc.hidden = training.equipment.trim().length === 0
   els.playerTrainingName.textContent = training.name
   els.sessionRemaining.textContent = formatSeconds(summary.totalSeconds)
+  updateVideoBlocks(training)
   renderExerciseList()
+}
+
+function updateVideoBlocks(training: Training): void {
+  const video = training.video
+  updateVideoBlock(els.exerciseVideo, els.exerciseVideoPlaceholder, video)
+  updateVideoBlock(els.playerVideo, els.playerVideoPlaceholder, video)
+}
+
+function updateVideoBlock(
+  videoEl: HTMLVideoElement,
+  placeholderEl: HTMLElement,
+  video?: TrainingVideo
+): void {
+  if (!video) {
+    videoEl.pause()
+    videoEl.removeAttribute('src')
+    videoEl.classList.remove('is-portrait')
+    videoEl.hidden = true
+    placeholderEl.hidden = false
+    videoEl.load()
+    return
+  }
+
+  videoEl.hidden = false
+  placeholderEl.hidden = true
+  videoEl.classList.toggle('is-portrait', video.orientation === 'portrait')
+  if (videoEl.getAttribute('src') !== video.src) {
+    videoEl.pause()
+    videoEl.setAttribute('src', video.src)
+    videoEl.load()
+  }
 }
 
 function updateDetailStats(training: Training): ProgramSummary {
@@ -523,6 +574,7 @@ function renderExerciseList(): void {
 function showExerciseDetails(exerciseName: string): void {
   const exercise = getProgramExercises(state.programKey).find(ex => ex.name === exerciseName)
   if (!exercise) return
+  updateVideoBlocks(getSelectedTraining())
   els.exerciseDetailTitle.textContent = exercise.name
   els.exerciseDetailMeta.textContent = formatExerciseMeta(exercise)
   const tips = exercise.tips?.length ? exercise.tips.map(tip => `• ${tip}`).join('\n') : NO_TIPS_MESSAGE
@@ -1263,7 +1315,7 @@ function pulsePing(): void {
   // removed visual ping
 }
 
-function playTone(frequency: number, duration = 0.12, volume = 0.14): void {
+function playTone(frequency: number, duration = 0.12, volume = METRONOME_VOLUME): void {
   ensureAudio()
   pulsePing()
   if (!state.audioCtx) return
@@ -1294,7 +1346,7 @@ function handleCountdownBeep(): void {
   const remainingSec = Math.ceil(state.remainingMs / 1000)
   if (remainingSec <= 3 && remainingSec !== state.lastCountdownSecond) {
     state.lastCountdownSecond = remainingSec
-    playTone(remainingSec === 1 ? 980 : 620, 0.08, 0.12)
+    playTone(remainingSec === 1 ? 980 : 620, 0.08, METRONOME_VOLUME)
   }
 }
 
@@ -1303,7 +1355,7 @@ function ensureMusicPlayer(): HTMLAudioElement | null {
   if (!musicPlayer) {
     const audio = new Audio()
     audio.preload = 'auto'
-    audio.volume = 0.5
+    audio.volume = MUSIC_VOLUME
     audio.addEventListener('ended', () => {
       if (state.status === 'running') {
         playRandomTrack()

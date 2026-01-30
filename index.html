@@ -76,7 +76,10 @@
           <p class="muted small center-text" id="exercise-detail-meta"></p>
           <div class="detail-block">
             <h3>Vídeo</h3>
-            <p class="muted">Vídeo em breve.</p>
+            <div class="video-shell">
+              <video id="exercise-video" class="video-player" controls playsinline preload="metadata"></video>
+              <p class="muted" id="exercise-video-placeholder">Vídeo em breve.</p>
+            </div>
           </div>
           <div class="detail-block">
             <h3>Dicas</h3>
@@ -121,7 +124,10 @@
             </div>
             <div class="detail-block video-block">
               <h3>Vídeo</h3>
-              <p class="muted">Vídeo em breve.</p>
+              <div class="video-shell">
+                <video id="player-video" class="video-player" controls playsinline preload="metadata"></video>
+                <p class="muted" id="player-video-placeholder">Vídeo em breve.</p>
+              </div>
             </div>
             <div class="time-stack">
               <div class="time-header">
