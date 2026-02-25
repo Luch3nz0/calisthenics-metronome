@@ -16,17 +16,15 @@
     <main class="screen-stack">
       <section class="screen" data-screen="select">
         <div class="panel">
-          <div class="row between">
-            <div class="heading-block">
-              <h2 class="select-title">Selecionar treino</h2>
-            </div>
-            <button class="ghost small neon-history" id="history-shortcut" hidden>Histórico</button>
+          <div class="heading-block">
+            <h2 class="select-title">Selecionar treino</h2>
           </div>
           <div class="training-list" id="training-list"></div>
         </div>
-        <div class="footer-actions center">
-          <button class="ghost large" id="select-history-btn" hidden>Ver histórico</button>
-        </div>
+        <nav class="bottom-nav" aria-label="Navegação principal">
+          <button class="ghost large bottom-nav-btn is-active" id="select-trainings-btn">Treinos</button>
+          <button class="ghost large bottom-nav-btn" id="select-profile-btn">Perfil</button>
+        </nav>
       </section>
 
       <section class="screen" data-screen="details" hidden>
@@ -167,7 +165,7 @@
         <div class="panel complete-panel">
           <h2 class="complete-title">Treino concluído!</h2>
           <p class="muted complete-subtitle">
-            Congratulations on your finishing the <span id="complete-training-name"></span> session! Keep the great work!
+            Você concluiu o treino <span id="complete-training-name"></span>. Continue assim!
           </p>
           <div class="quick-stats complete-stats">
             <div class="stat-card neon-blue">
@@ -175,36 +173,66 @@
               <p class="value" id="complete-xp-earned">0 XP</p>
             </div>
             <div class="stat-card complete-white">
-              <p class="label">Treinos concluídos</p>
-              <p class="value" id="complete-count">0</p>
+              <p class="label">Tempo treino</p>
+              <p class="value" id="complete-training-time">00:00</p>
+            </div>
+            <div class="stat-card neon-orange">
+              <p class="label">Streak</p>
+              <p class="value" id="complete-streak">0 dias</p>
             </div>
             <div class="stat-card neon-gold">
               <p class="label">Total XP</p>
               <p class="value" id="complete-total-xp">0 XP</p>
             </div>
           </div>
+          <div class="share-actions">
+            <button class="primary wide" id="complete-share-btn">Compartilhar resultado</button>
+            <div class="share-targets" id="complete-share-targets" hidden>
+              <button class="ghost large" id="complete-share-instagram-btn">Instagram</button>
+              <button class="ghost large" id="complete-share-x-btn">X</button>
+            </div>
+          </div>
         </div>
         <div class="footer-actions">
           <button class="ghost wide" id="complete-to-selection">Voltar para treinos</button>
-          <button class="primary wide" id="complete-to-history">Ver histórico</button>
+          <button class="primary wide" id="complete-to-history">Perfil</button>
         </div>
       </section>
 
       <section class="screen" data-screen="history" hidden>
         <div class="panel history-panel">
           <div class="history-header">
-            <h2>Histórico</h2>
+            <h2>Perfil</h2>
           </div>
           <div class="stat-card neon accent-center">
+            <p class="label">XP total</p>
             <p class="value" id="history-total-xp">0 XP</p>
           </div>
+          <div class="stat-card neon-orange accent-center">
+            <p class="label">Streak</p>
+            <p class="value" id="history-streak">0 dias</p>
+          </div>
+          <h3 class="history-subtitle">Historico</h3>
           <div class="history-list" id="history-list"></div>
         </div>
-        <div class="footer-actions center">
-          <button class="ghost large" id="history-back-btn">Voltar para seleção</button>
-        </div>
+        <nav class="bottom-nav" aria-label="Navegação principal">
+          <button class="ghost large bottom-nav-btn" id="history-trainings-btn">Treinos</button>
+          <button class="ghost large bottom-nav-btn is-active" id="history-profile-btn">Perfil</button>
+        </nav>
       </section>
     </main>
+  </div>
+
+  <div class="confirm-overlay" id="confirm-overlay" hidden>
+    <div class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirm-message">
+      <p class="confirm-message" id="confirm-message">
+        Tem certeza que vc quer sair do treino? Seu progresso sera perdido.
+      </p>
+      <div class="confirm-actions">
+        <button class="ghost large" id="confirm-no-btn">Nao</button>
+        <button class="primary large" id="confirm-yes-btn">Sim</button>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="dist/app.js"></script>

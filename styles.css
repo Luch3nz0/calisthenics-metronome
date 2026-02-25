@@ -517,6 +517,24 @@ p { margin: 0; color: var(--muted); }
   flex: 1;
 }
 
+.bottom-nav {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.bottom-nav-btn {
+  width: 100%;
+  text-align: center;
+  font-weight: 700;
+}
+
+.bottom-nav-btn.is-active {
+  border-color: rgba(14, 222, 196, 0.62);
+  box-shadow: 0 0 16px rgba(14, 222, 196, 0.22);
+  background: rgba(14, 222, 196, 0.12);
+}
+
 .detail-block {
   border: 1px solid var(--stroke);
   border-radius: 12px;
@@ -640,6 +658,12 @@ p { margin: 0; color: var(--muted); }
 .history-header h2 {
   font-size: clamp(26px, 4vw, 38px);
 }
+.history-subtitle {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.8);
+}
 .stat-card.accent-center {
   text-align: center;
   min-width: 180px;
@@ -696,6 +720,61 @@ p { margin: 0; color: var(--muted); }
 .stat-card.neon-gold .label,
 .stat-card.neon-gold .value {
   color: #ffe8a1;
+}
+
+.stat-card.neon-orange {
+  border-color: rgba(255, 140, 66, 0.86);
+  box-shadow: 0 0 22px rgba(255, 140, 66, 0.38);
+  background: rgba(255, 140, 66, 0.16);
+  text-align: left;
+}
+.stat-card.neon-orange .label,
+.stat-card.neon-orange .value {
+  color: #ffe6cf;
+}
+
+.share-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.share-targets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(1, 6, 16, 0.72);
+  backdrop-filter: blur(6px);
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.confirm-card {
+  width: min(420px, 100%);
+  border: 1px solid var(--stroke);
+  border-radius: 14px;
+  background: rgba(11, 16, 32, 0.96);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.38);
+  padding: 16px;
+  display: grid;
+  gap: 16px;
+}
+
+.confirm-message {
+  color: #f5f8ff;
+  line-height: 1.45;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .neon-history {
@@ -760,4 +839,14 @@ p { margin: 0; color: var(--muted); }
   .history-panel { padding: 12px; }
   .history-panel .stat-card { padding: 8px 10px; min-width: 0; width: 100%; }
   .history-item { padding: 8px 10px; height: 56px; }
+  .share-targets {
+    grid-template-columns: 1fr;
+  }
+  .confirm-actions {
+    flex-direction: column;
+  }
+  .confirm-actions .ghost,
+  .confirm-actions .primary {
+    width: 100%;
+  }
 }

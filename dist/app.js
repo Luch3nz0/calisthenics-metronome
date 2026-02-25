@@ -77,6 +77,11 @@ const HISTORY_STORAGE_KEY = 'calisthenics-history';
 const XP_RATE = 1;
 const PREP_DELAY_SECONDS = 5;
 const NO_TIPS_MESSAGE = 'Sem dicas adicionais para este exercício.';
+const EXIT_TRAINING_MESSAGE = 'Tem certeza que vc quer sair do treino? Seu progresso sera perdido.';
+const SWIPE_THRESHOLD_PX = 70;
+const SWIPE_DOMINANCE_RATIO = 1.2;
+const SHARE_CARD_WIDTH = 1080;
+const SHARE_CARD_HEIGHT = 1350;
 const state = {
     programKey: 'intensive',
     selectedTrainingId: null,
@@ -105,17 +110,31 @@ const MUSIC_TRACKS = [
 let musicPlayer = null;
 let lastMusicIndex = null;
 let historyEntries = [];
+let pendingConfirmAction = null;
+let latestCompletionEntry = null;
 function byId(id) {
     const el = document.getElementById(id);
     if (!el)
         throw new Error(`Element not found: ${id}`);
     return el;
 }
+function byScreen(screen) {
+    const panel = document.querySelector(`[data-screen="${screen}"]`);
+    if (!panel)
+        throw new Error(`Screen not found: ${screen}`);
+    return panel;
+}
 const els = {
     screens: Array.from(document.querySelectorAll('[data-screen]')),
+    selectScreen: byScreen('select'),
+    detailsScreen: byScreen('details'),
+    exerciseScreen: byScreen('exercise'),
+    historyScreen: byScreen('history'),
     trainingList: byId('training-list'),
-    historyShortcut: byId('history-shortcut'),
-    selectHistory: byId('select-history-btn'),
+    selectTrainings: byId('select-trainings-btn'),
+    selectProfile: byId('select-profile-btn'),
+    historyTrainings: byId('history-trainings-btn'),
+    historyProfile: byId('history-profile-btn'),
     detailTrainingName: byId('detail-training-name'),
     detailTrainingDesc: byId('detail-training-desc'),
     totalTime: byId('total-time'),
@@ -146,16 +165,25 @@ const els = {
     sessionRemaining: byId('session-remaining'),
     playerPlaceholder: byId('player-placeholder'),
     playerMain: byId('player-main'),
-    completeCount: byId('complete-count'),
     completeXpEarned: byId('complete-xp-earned'),
+    completeTrainingTime: byId('complete-training-time'),
+    completeStreak: byId('complete-streak'),
     completeTotalXp: byId('complete-total-xp'),
     completeTrainingName: byId('complete-training-name'),
+    completeShare: byId('complete-share-btn'),
+    completeShareTargets: byId('complete-share-targets'),
+    completeShareInstagram: byId('complete-share-instagram-btn'),
+    completeShareX: byId('complete-share-x-btn'),
     completeToSelection: byId('complete-to-selection'),
     completeToHistory: byId('complete-to-history'),
     historyList: byId('history-list'),
     historyTotalXp: byId('history-total-xp'),
-    historyBack: byId('history-back-btn'),
-    metronomeBack: byId('metronome-back-btn')
+    historyStreak: byId('history-streak'),
+    metronomeBack: byId('metronome-back-btn'),
+    confirmOverlay: byId('confirm-overlay'),
+    confirmMessage: byId('confirm-message'),
+    confirmNo: byId('confirm-no-btn'),
+    confirmYes: byId('confirm-yes-btn')
 };
 const phaseMeta = {
     go: { label: 'Vai', tone: 880 },
@@ -244,9 +272,17 @@ function init() {
         selectTraining(trainingId);
         showScreen('details');
     });
-    els.selectHistory.addEventListener('click', () => {
-        renderHistory();
-        showScreen('history');
+    els.selectTrainings.addEventListener('click', () => {
+        openTrainingRoutineScreen();
+    });
+    els.selectProfile.addEventListener('click', () => {
+        openProfileScreen();
+    });
+    els.historyTrainings.addEventListener('click', () => {
+        openTrainingRoutineScreen();
+    });
+    els.historyProfile.addEventListener('click', () => {
+        openProfileScreen();
     });
     els.detailExerciseList.addEventListener('click', event => {
         const target = event.target.closest('[data-exercise-name]');
@@ -266,25 +302,25 @@ function init() {
         showScreen('details');
     });
     els.metronomeBack.addEventListener('click', () => {
+        if (state.status === 'running' || state.status === 'paused') {
+            openTrainingConfirm('leave');
+            return;
+        }
         resetSession();
         showScreen('details');
     });
-    els.historyShortcut.addEventListener('click', () => {
-        renderHistory();
-        showScreen('history');
-    });
-    els.historyBack.addEventListener('click', () => {
-        showScreen('select');
-    });
     els.completeToSelection.addEventListener('click', () => {
         resetSession();
-        showScreen('select');
+        openTrainingRoutineScreen();
     });
     els.completeToHistory.addEventListener('click', () => {
-        renderHistory();
-        showScreen('history');
+        openProfileScreen();
     });
     els.start.addEventListener('click', () => {
+        if (state.status === 'running' || state.status === 'paused') {
+            openTrainingConfirm('reset');
+            return;
+        }
         startSession();
     });
     els.pause.addEventListener('click', () => {
@@ -298,11 +334,37 @@ function init() {
     els.musicToggle.addEventListener('click', () => {
         setMusicMuted(!state.musicMuted);
     });
+    els.completeShare.addEventListener('click', () => {
+        els.completeShareTargets.hidden = !els.completeShareTargets.hidden;
+    });
+    els.completeShareInstagram.addEventListener('click', () => {
+        void shareCompletion('instagram');
+    });
+    els.completeShareX.addEventListener('click', () => {
+        void shareCompletion('x');
+    });
+    els.confirmNo.addEventListener('click', () => {
+        closeTrainingConfirm();
+    });
+    els.confirmYes.addEventListener('click', () => {
+        handleTrainingConfirm();
+    });
+    bindSwipeNavigation(els.selectScreen, {
+        left: () => openProfileScreen()
+    });
+    bindSwipeNavigation(els.historyScreen, {
+        right: () => openTrainingRoutineScreen()
+    });
+    bindSwipeNavigation(els.detailsScreen, {
+        left: () => openTrainingRoutineScreen()
+    });
+    bindSwipeNavigation(els.exerciseScreen, {
+        left: () => showScreen('details')
+    });
     if (TRAININGS.length) {
         selectTraining(TRAININGS[0].id);
     }
     renderHistory();
-    updateHistoryShortcut();
     updateMusicToggle();
     showScreen('select');
 }
@@ -310,6 +372,13 @@ function showScreen(screen) {
     els.screens.forEach(panel => {
         panel.hidden = panel.dataset.screen !== screen;
     });
+    if (screen !== 'complete') {
+        els.completeShareTargets.hidden = true;
+    }
+    if (screen !== 'metronome') {
+        closeTrainingConfirm();
+    }
+    setMainNavActive(screen === 'history' ? 'history' : 'select');
 }
 function setButtonStyle(btn, { primary }) {
     if (!btn)
@@ -317,14 +386,55 @@ function setButtonStyle(btn, { primary }) {
     btn.classList.toggle('primary', primary);
     btn.classList.toggle('ghost', !primary);
 }
-function updateHistoryShortcut() {
-    const hasHistory = historyEntries.length > 0;
-    els.historyShortcut.hidden = !hasHistory;
-    els.selectHistory.hidden = !hasHistory;
-    if (hasHistory) {
-        const totalXp = getTotalXp(historyEntries);
-        els.historyShortcut.textContent = `Histórico · ${totalXp} XP`;
-    }
+function openProfileScreen() {
+    renderHistory();
+    showScreen('history');
+}
+function openTrainingRoutineScreen() {
+    showScreen('select');
+}
+function setMainNavActive(activeScreen) {
+    const selectingTrainings = activeScreen === 'select';
+    els.selectTrainings.classList.toggle('is-active', selectingTrainings);
+    els.selectProfile.classList.toggle('is-active', !selectingTrainings);
+    els.historyTrainings.classList.toggle('is-active', selectingTrainings);
+    els.historyProfile.classList.toggle('is-active', !selectingTrainings);
+}
+function bindSwipeNavigation(element, handlers) {
+    let startX = 0;
+    let startY = 0;
+    let isTracking = false;
+    element.addEventListener('touchstart', event => {
+        if (event.touches.length !== 1)
+            return;
+        const touch = event.touches[0];
+        startX = touch.clientX;
+        startY = touch.clientY;
+        isTracking = true;
+    }, { passive: true });
+    element.addEventListener('touchcancel', () => {
+        isTracking = false;
+    });
+    element.addEventListener('touchend', event => {
+        if (!isTracking)
+            return;
+        isTracking = false;
+        const touch = event.changedTouches[0];
+        if (!touch)
+            return;
+        const deltaX = touch.clientX - startX;
+        const deltaY = touch.clientY - startY;
+        if (Math.abs(deltaX) < SWIPE_THRESHOLD_PX)
+            return;
+        if (Math.abs(deltaX) < Math.abs(deltaY) * SWIPE_DOMINANCE_RATIO)
+            return;
+        if (deltaX < 0) {
+            handlers.left?.();
+        }
+        else {
+            handlers.right?.();
+        }
+    }, { passive: true });
 }
 function getSelectedTraining() {
     const training = TRAININGS.find(item => item.id === state.selectedTrainingId) ?? TRAININGS[0];
@@ -493,6 +603,34 @@ function saveHistory(entries) {
 function getTotalXp(entries) {
     return entries.reduce((sum, entry) => sum + entry.xpEarned, 0);
 }
+function formatStreak(streak) {
+    return `${streak} ${streak === 1 ? 'dia' : 'dias'}`;
+}
+function getDateKey(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+function getCurrentStreak(entries) {
+    if (!entries.length)
+        return 0;
+    const completedDays = new Set();
+    entries.forEach(entry => {
+        const date = new Date(entry.completedAt);
+        if (!Number.isNaN(date.getTime())) {
+            completedDays.add(getDateKey(date));
+        }
+    });
+    const cursor = new Date();
+    cursor.setHours(0, 0, 0, 0);
+    let streak = 0;
+    while (completedDays.has(getDateKey(cursor))) {
+        streak += 1;
+        cursor.setDate(cursor.getDate() - 1);
+    }
+    return streak;
+}
 function recordCompletion() {
     const training = getSelectedTraining();
     const durationSeconds = Math.max(0, Math.round(state.sessionTotalMs / 1000));
@@ -507,20 +645,26 @@ function recordCompletion() {
     };
     historyEntries = [entry, ...historyEntries];
     saveHistory(historyEntries);
-    updateHistoryShortcut();
     return entry;
 }
 function renderCompletion(entry) {
+    latestCompletionEntry = entry;
     const totalXp = getTotalXp(historyEntries);
+    const streak = getCurrentStreak(historyEntries);
     els.completeTrainingName.textContent = entry.trainingName;
-    els.completeCount.textContent = String(historyEntries.length);
     els.completeXpEarned.textContent = `${entry.xpEarned} XP`;
+    els.completeTrainingTime.textContent = formatSeconds(entry.durationSeconds);
+    els.completeStreak.textContent = formatStreak(streak);
     els.completeTotalXp.textContent = `${totalXp} XP`;
+    els.completeShareTargets.hidden = true;
 }
 function renderHistory() {
+    const totalXp = getTotalXp(historyEntries);
+    const streak = getCurrentStreak(historyEntries);
+    els.historyTotalXp.textContent = `${totalXp} XP`;
+    els.historyStreak.textContent = formatStreak(streak);
     if (!historyEntries.length) {
         els.historyList.innerHTML = '<p class="muted small">Nenhum treino concluído ainda.</p>';
-        els.historyTotalXp.textContent = '0 XP';
         return;
     }
     const items = historyEntries
@@ -542,7 +686,6 @@ function renderHistory() {
     })
         .join('');
     els.historyList.innerHTML = items;
-    els.historyTotalXp.textContent = `${getTotalXp(historyEntries)} XP`;
 }
 function cloneExercise(exercise) {
     if (hasTempo(exercise)) {
@@ -786,7 +929,7 @@ function startSession() {
     }
     state.status = 'running';
     updateStatusChip();
-    els.start.textContent = 'Reiniciar';
+    els.start.textContent = 'Resetar';
     els.pause.textContent = 'Pausar';
     els.pause.disabled = false;
     els.sessionRemaining.textContent = formatSeconds(Math.ceil(state.sessionTotalMs / 1000));
@@ -849,6 +992,30 @@ function resetSession(updateChip = true) {
     clearActiveCards();
     setPlayerActive(false);
     pauseMusic(true);
+}
+function openTrainingConfirm(action) {
+    if (state.status === 'running') {
+        pauseSession();
+    }
+    pendingConfirmAction = action;
+    els.confirmMessage.textContent = EXIT_TRAINING_MESSAGE;
+    els.confirmOverlay.hidden = false;
+}
+function closeTrainingConfirm() {
+    pendingConfirmAction = null;
+    els.confirmOverlay.hidden = true;
+}
+function handleTrainingConfirm() {
+    const action = pendingConfirmAction;
+    closeTrainingConfirm();
+    if (!action)
+        return;
+    if (action === 'leave') {
+        resetSession();
+        showScreen('details');
+        return;
+    }
+    resetSession();
 }
 function setPlayerActive(isActive) {
     els.playerMain.hidden = !isActive;
@@ -1112,6 +1279,278 @@ function renderNextDuringRest() {
         .join(' · ');
     els.currentTitle.textContent = `Próximo: ${next.exerciseName}`;
     els.currentDetail.textContent = [nextPhase.label, nextSetRep].filter(Boolean).join(' • ');
+}
+function buildShareCardStats(entry) {
+    return {
+        trainingName: entry.trainingName,
+        xpEarned: entry.xpEarned,
+        sessionTime: formatSeconds(entry.durationSeconds),
+        streak: getCurrentStreak(historyEntries),
+        totalXp: getTotalXp(historyEntries)
+    };
+}
+function buildShareMessage(stats) {
+    return [
+        `NoSkip | ${stats.trainingName}`,
+        `XP: ${stats.xpEarned}`,
+        `Tempo: ${stats.sessionTime}`,
+        `Streak: ${formatStreak(stats.streak)}`,
+        `Total XP: ${stats.totalXp}`
+    ].join(' · ');
+}
+async function shareCompletion(target) {
+    const entry = latestCompletionEntry;
+    if (!entry)
+        return;
+    try {
+        const stats = buildShareCardStats(entry);
+        const message = buildShareMessage(stats);
+        const blob = await createShareCardBlob(stats);
+        const filename = `noskip-${Date.now()}.png`;
+        const file = new File([blob], filename, { type: 'image/png' });
+        const shared = await shareNatively(file, message);
+        if (!shared) {
+            downloadBlob(blob, filename);
+            openShareFallback(target, message);
+        }
+    }
+    catch {
+        // silent failure keeps UI responsive even when share APIs are unavailable
+    }
+    finally {
+        els.completeShareTargets.hidden = true;
+    }
+}
+async function shareNatively(file, message) {
+    const nav = navigator;
+    if (!nav.share)
+        return false;
+    try {
+        const supportsFiles = typeof nav.canShare === 'function' ? nav.canShare({ files: [file] }) : false;
+        if (supportsFiles) {
+            await nav.share({
+                title: 'NoSkip',
+                text: message,
+                files: [file]
+            });
+            return true;
+        }
+        await nav.share({ title: 'NoSkip', text: message });
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+}
+function openShareFallback(target, message) {
+    if (navigator.clipboard) {
+        void navigator.clipboard.writeText(message).catch(() => undefined);
+    }
+    if (target === 'x') {
+        const url = `https://x.com/intent/tweet?text=${encodeURIComponent(message)}`;
+        window.open(url, '_blank', 'noopener');
+        return;
+    }
+    window.open('https://www.instagram.com/', '_blank', 'noopener');
+}
+async function createShareCardBlob(stats) {
+    const canvas = document.createElement('canvas');
+    canvas.width = SHARE_CARD_WIDTH;
+    canvas.height = SHARE_CARD_HEIGHT;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+        throw new Error('Canvas context unavailable.');
+    }
+    drawShareCard(ctx, stats, canvas.width, canvas.height);
+    return canvasToBlob(canvas);
+}
+function drawShareCard(ctx, stats, width, height) {
+    const background = ctx.createLinearGradient(0, 0, width, height);
+    background.addColorStop(0, '#090f1d');
+    background.addColorStop(1, '#101c33');
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, width, height);
+    const glowA = ctx.createRadialGradient(width * 0.1, height * 0.12, 10, width * 0.1, height * 0.12, width * 0.62);
+    glowA.addColorStop(0, 'rgba(14, 222, 196, 0.34)');
+    glowA.addColorStop(1, 'rgba(14, 222, 196, 0)');
+    ctx.fillStyle = glowA;
+    ctx.fillRect(0, 0, width, height);
+    const glowB = ctx.createRadialGradient(width * 0.84, height * 0.06, 10, width * 0.84, height * 0.06, width * 0.5);
+    glowB.addColorStop(0, 'rgba(255, 140, 66, 0.34)');
+    glowB.addColorStop(1, 'rgba(255, 140, 66, 0)');
+    ctx.fillStyle = glowB;
+    ctx.fillRect(0, 0, width, height);
+    const panelX = 62;
+    const panelY = 62;
+    const panelWidth = width - panelX * 2;
+    const panelHeight = height - panelY * 2;
+    drawRoundedRect(ctx, panelX, panelY, panelWidth, panelHeight, 40);
+    ctx.fillStyle = 'rgba(8, 15, 30, 0.9)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#9bc0e3';
+    ctx.font = '700 30px "Space Grotesk", "DM Sans", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('RESULTADO NO SKIP', panelX + 52, panelY + 92);
+    ctx.fillStyle = '#f4f8ff';
+    ctx.font = '800 58px "Space Grotesk", "DM Sans", sans-serif';
+    const textY = drawWrappedText(ctx, stats.trainingName, panelX + 52, panelY + 158, panelWidth - 104, 68, 2);
+    const cardWidth = (panelWidth - 124) / 2;
+    const cardHeight = 166;
+    const cardTop = textY + 42;
+    const left = panelX + 52;
+    const right = left + cardWidth + 20;
+    drawStatCard(ctx, {
+        x: left,
+        y: cardTop,
+        width: cardWidth,
+        height: cardHeight,
+        label: 'XP',
+        value: `${stats.xpEarned}`,
+        accent: '#3fa9f5',
+        fill: 'rgba(63, 169, 245, 0.15)'
+    });
+    drawStatCard(ctx, {
+        x: right,
+        y: cardTop,
+        width: cardWidth,
+        height: cardHeight,
+        label: 'TEMPO',
+        value: stats.sessionTime,
+        accent: '#6dd6ff',
+        fill: 'rgba(109, 214, 255, 0.15)'
+    });
+    drawStatCard(ctx, {
+        x: left,
+        y: cardTop + cardHeight + 20,
+        width: cardWidth,
+        height: cardHeight,
+        label: 'STREAK',
+        value: formatStreak(stats.streak),
+        accent: '#ff9a4d',
+        fill: 'rgba(255, 154, 77, 0.18)'
+    });
+    drawStatCard(ctx, {
+        x: right,
+        y: cardTop + cardHeight + 20,
+        width: cardWidth,
+        height: cardHeight,
+        label: 'TOTAL XP',
+        value: `${stats.totalXp}`,
+        accent: '#ffe08f',
+        fill: 'rgba(255, 224, 143, 0.16)'
+    });
+    drawNoSkipLogo(ctx, width / 2, panelY + panelHeight - 104);
+}
+function drawStatCard(ctx, opts) {
+    drawRoundedRect(ctx, opts.x, opts.y, opts.width, opts.height, 24);
+    ctx.fillStyle = opts.fill;
+    ctx.fill();
+    ctx.strokeStyle = opts.accent;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = opts.accent;
+    ctx.font = '700 24px "Space Grotesk", "DM Sans", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(opts.label, opts.x + 24, opts.y + 50);
+    ctx.fillStyle = '#f5fbff';
+    ctx.font = '800 44px "Space Grotesk", "DM Sans", sans-serif';
+    ctx.fillText(opts.value, opts.x + 24, opts.y + 118);
+}
+function drawNoSkipLogo(ctx, centerX, baselineY) {
+    ctx.save();
+    ctx.translate(centerX, baselineY);
+    ctx.textAlign = 'center';
+    drawRoundedRect(ctx, -190, -56, 380, 94, 24);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-140, 2);
+    ctx.lineTo(-100, -20);
+    ctx.lineTo(-62, 2);
+    ctx.strokeStyle = '#0edec4';
+    ctx.lineWidth = 10;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.fillStyle = '#f2f8ff';
+    ctx.font = '800 42px "Space Grotesk", "DM Sans", sans-serif';
+    ctx.fillText('NoSkip', 42, 14);
+    ctx.restore();
+}
+function drawRoundedRect(ctx, x, y, width, height, radius) {
+    const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    ctx.lineTo(x + r, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+}
+function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
+    const words = text.trim().split(/\s+/).filter(Boolean);
+    if (!words.length)
+        return y;
+    let line = '';
+    let renderedLines = 0;
+    let drawY = y;
+    for (let idx = 0; idx < words.length; idx++) {
+        const word = words[idx];
+        const candidate = line ? `${line} ${word}` : word;
+        const width = ctx.measureText(candidate).width;
+        if (width <= maxWidth || !line) {
+            line = candidate;
+            continue;
+        }
+        ctx.fillText(line, x, drawY);
+        renderedLines += 1;
+        drawY += lineHeight;
+        line = word;
+        if (renderedLines >= maxLines - 1)
+            break;
+    }
+    if (renderedLines < maxLines && line) {
+        let finalLine = line;
+        if (ctx.measureText(finalLine).width > maxWidth) {
+            while (finalLine.length > 1 && ctx.measureText(`${finalLine}…`).width > maxWidth) {
+                finalLine = finalLine.slice(0, -1);
+            }
+            finalLine = `${finalLine}…`;
+        }
+        ctx.fillText(finalLine, x, drawY);
+        renderedLines += 1;
+    }
+    return y + renderedLines * lineHeight;
+}
+function canvasToBlob(canvas) {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob(blob => {
+            if (!blob) {
+                reject(new Error('Failed to create PNG blob.'));
+                return;
+            }
+            resolve(blob);
+        }, 'image/png');
+    });
 }
 function ensureAudio() {
     if (!state.audioCtx) {
