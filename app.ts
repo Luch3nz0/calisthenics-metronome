@@ -1,1974 +1,883 @@
-import { trainingPrograms } from './exercises.js'
-import type {
-  Exercise,
-  TrainingGroup,
-  TempoExercise,
-  TimeExercise,
-  TrainingProgram,
-  TrainingProgramKey
-} from './exercises.js'
+import { squatTraining } from './session-data.js'
+import {
+  getActiveUser,
+  getProfileStats,
+  getSessionsForUser,
+  hasRegisteredUser,
+  loginUser,
+  logoutUser,
+  registerUser,
+  saveSession,
+  type StoredSession,
+  type StoredUser
+} from './storage.js'
+import { SquatSessionEngine, type EngineSnapshot, type PoseLandmark } from './squat-engine.js'
+import { VoiceCoach } from './voice-coach.js'
 
-type ProgramKey = TrainingProgramKey | 'test'
+type ScreenKey = 'auth' | 'home' | 'details' | 'live' | 'results' | 'profile'
+type AuthMode = 'signup' | 'login'
 
-type ScreenKey = 'select' | 'details' | 'exercise' | 'metronome' | 'complete' | 'history'
-
-type PhaseKey = 'go' | 'pause' | 'return' | 'rest' | 'setRest' | 'hold' | 'prep'
-
-type SegmentType = 'movement' | 'micro-rest' | 'rest' | 'hold'
-
-type PhaseMeta = { label: string; tone: number }
-
-type ConfirmAction = 'leave' | 'reset'
-
-type SwipeHandlers = {
-  left?: () => void
-  right?: () => void
+type LiveState = {
+  engine: SquatSessionEngine | null
+  pose: MediaPipePoseInstance | null
+  stream: MediaStream | null
+  rafId: number | null
+  sending: boolean
+  paused: boolean
+  pausedAtMs: number | null
+  startedAtMs: number
+  pausedDurationMs: number
+  snapshot: EngineSnapshot | null
+  completionHandled: boolean
 }
 
-type ShareTarget = 'instagram' | 'x'
+const voiceCoach = new VoiceCoach()
 
-type ShareCardStats = {
-  trainingName: string
-  xpEarned: number
-  sessionTime: string
-  streak: number
-  totalXp: number
-}
-
-type ScheduleSegment = {
-  exerciseName: string
-  routine: Exercise['routine']
-  set: number
-  totalSets: number
-  rep: number | null
-  totalReps: number | null
-  phase: PhaseKey
-  type: SegmentType
-  duration: number
-  group: number | null
-  tempoParts: Record<string, number>
-}
-
-type ProgramSummary = {
-  totalSeconds: number
-  totalSets: number
-  segmentCount: number
-  exercisesCount: number
-}
-
-type StateStatus = 'idle' | 'running' | 'paused' | 'done'
-
-type TrainingVideo = {
-  src: string
-  orientation: 'portrait' | 'landscape'
-}
-
-type Training = {
-  id: string
-  name: string
-  description: string
-  equipment: string
-  video?: TrainingVideo
-  programKey: ProgramKey
-  difficulty: number
-}
-
-type HistoryEntry = {
-  id: string
-  trainingId: string
-  trainingName: string
-  completedAt: string
-  durationSeconds: number
-  xpEarned: number
-}
-
-type State = {
-  programKey: ProgramKey
-  selectedTrainingId: string | null
-  schedule: ScheduleSegment[]
-  pointer: number
-  status: StateStatus
-  segmentDurationMs: number
-  remainingMs: number
-  completedMs: number
-  animationId: number | null
-  lastCountdownSecond: number | null
-  audioCtx: AudioContext | null
-  sessionTotalMs: number
-  segmentStartedAt: number
-  musicMuted: boolean
-}
-
-const TRAININGS: Training[] = [
-  {
-    id: 'default-training',
-    name: 'Calistenia corpo inteiro',
-    description: 'Barra fixa, barra com anilhas e colchonete.',
-    equipment: 'Barra fixa, barra com anilhas e colchonete.',
-    programKey: 'intensive',
-    difficulty: 2
-  },
-  {
-    id: 'home-training',
-    name: 'Treino em casa',
-    description: '45s de exercício · 15s de pausa · sem equipamento.',
-    equipment: 'Sem equipamento.',
-    programKey: 'home',
-    difficulty: 1
-  },
-  {
-    id: 'core-training',
-    name: 'Abdômen 8 min',
-    description: '60s por exercício · sem pausa.',
-    equipment: 'Sem equipamento.',
-    programKey: 'core',
-    difficulty: 1
-  },
-  {
-    id: 'stretch-training',
-    name: 'Alongamento',
-    description: '30s por exercício · sem pausa.',
-    equipment: 'Sem equipamento.',
-    programKey: 'stretch',
-    difficulty: 1
-  },
-  {
-    id: 'flash-training',
-    name: 'Treino iniciante flash',
-    description: '10 movimentos de 60s + aquecimento · pausa de 2s.',
-    equipment: 'Sem equipamento.',
-    programKey: 'flash',
-    difficulty: 1
-  },
-  {
-    id: 'test-training-easy',
-    name: 'Treino teste curto (fácil)',
-    description: 'Sequência curta para validar telas · XP x1.',
-    equipment: 'Sem equipamento.',
-    programKey: 'test',
-    difficulty: 1
-  },
-  {
-    id: 'test-training-medium',
-    name: 'Treino teste curto (intermediário)',
-    description: 'Sequência curta para validar telas · XP x2.',
-    equipment: 'Sem equipamento.',
-    video: {
-      src: 'videos/portrait.MOV',
-      orientation: 'portrait'
-    },
-    programKey: 'test',
-    difficulty: 2
-  },
-  {
-    id: 'test-training-hard',
-    name: 'Treino teste curto (difícil)',
-    description: 'Sequência curta para validar telas · XP x3.',
-    equipment: 'Sem equipamento.',
-    video: {
-      src: 'videos/landscape.MOV',
-      orientation: 'landscape'
-    },
-    programKey: 'test',
-    difficulty: 3
+const state: {
+  screen: ScreenKey
+  authMode: AuthMode
+  activeUser: StoredUser | null
+  sessions: StoredSession[]
+  latestSession: StoredSession | null
+  voiceMuted: boolean
+  live: LiveState
+} = {
+  screen: 'auth',
+  authMode: hasRegisteredUser() ? 'login' : 'signup',
+  activeUser: getActiveUser(),
+  sessions: [],
+  latestSession: null,
+  voiceMuted: false,
+  live: {
+    engine: null,
+    pose: null,
+    stream: null,
+    rafId: null,
+    sending: false,
+    paused: false,
+    pausedAtMs: null,
+    startedAtMs: 0,
+    pausedDurationMs: 0,
+    snapshot: null,
+    completionHandled: false
   }
-]
-
-const HISTORY_STORAGE_KEY = 'calisthenics-history'
-const XP_RATE = 1
-const PREP_DELAY_SECONDS = 5
-const NO_TIPS_MESSAGE = 'Sem dicas adicionais para este exercício.'
-const EXIT_TRAINING_MESSAGE = 'Tem certeza que vc quer sair do treino? Seu progresso sera perdido.'
-const SWIPE_THRESHOLD_PX = 70
-const SWIPE_DOMINANCE_RATIO = 1.2
-const SHARE_CARD_WIDTH = 1080
-const SHARE_CARD_HEIGHT = 1350
-
-const state: State = {
-  programKey: 'intensive',
-  selectedTrainingId: null,
-  schedule: [],
-  pointer: 0,
-  status: 'idle',
-  segmentDurationMs: 0,
-  remainingMs: 0,
-  completedMs: 0,
-  animationId: null,
-  lastCountdownSecond: null,
-  audioCtx: null,
-  sessionTotalMs: 0,
-  segmentStartedAt: 0,
-  musicMuted: false
 }
-
-const METRONOME_VOLUME = 0.14
-const MUSIC_VOLUME = METRONOME_VOLUME / 1.2
-
-const MUSIC_TRACKS = [
-  'music/drift-phonk-200108.mp3',
-  'music/fresh-457883.mp3',
-  'music/she-hates-my-reps-464309.mp3',
-  'music/summer-trip-audio-oficial-243190.mp3',
-  'music/trap-future-bass-royalty-free-music-167020.mp3'
-]
-
-let musicPlayer: HTMLAudioElement | null = null
-let lastMusicIndex: number | null = null
-
-let historyEntries: HistoryEntry[] = []
-let pendingConfirmAction: ConfirmAction | null = null
-let latestCompletionEntry: HistoryEntry | null = null
 
 function byId<T extends HTMLElement>(id: string): T {
-  const el = document.getElementById(id)
-  if (!el) throw new Error(`Element not found: ${id}`)
-  return el as T
+  const element = document.getElementById(id)
+  if (!element) {
+    throw new Error(`Missing element: ${id}`)
+  }
+
+  return element as T
 }
 
-function byScreen(screen: ScreenKey): HTMLElement {
+function queryScreen(screen: ScreenKey): HTMLElement {
   const panel = document.querySelector<HTMLElement>(`[data-screen="${screen}"]`)
-  if (!panel) throw new Error(`Screen not found: ${screen}`)
+  if (!panel) throw new Error(`Missing screen: ${screen}`)
   return panel
 }
 
 const els = {
   screens: Array.from(document.querySelectorAll<HTMLElement>('[data-screen]')),
-  selectScreen: byScreen('select'),
-  detailsScreen: byScreen('details'),
-  exerciseScreen: byScreen('exercise'),
-  historyScreen: byScreen('history'),
-  trainingList: byId<HTMLElement>('training-list'),
-  selectTrainings: byId<HTMLButtonElement>('select-trainings-btn'),
-  selectProfile: byId<HTMLButtonElement>('select-profile-btn'),
-  historyTrainings: byId<HTMLButtonElement>('history-trainings-btn'),
-  historyProfile: byId<HTMLButtonElement>('history-profile-btn'),
-  detailTrainingName: byId<HTMLElement>('detail-training-name'),
-  detailTrainingDesc: byId<HTMLElement>('detail-training-desc'),
-  totalTime: byId<HTMLElement>('total-time'),
-  detailExerciseList: byId<HTMLElement>('detail-exercise-list'),
-  detailBack: byId<HTMLButtonElement>('detail-back-btn'),
-  detailStart: byId<HTMLButtonElement>('detail-start-btn'),
-  exerciseDetailTitle: byId<HTMLElement>('exercise-detail-title'),
-  exerciseDetailMeta: byId<HTMLElement>('exercise-detail-meta'),
-  exerciseDetailTips: byId<HTMLElement>('exercise-detail-tips'),
-  exerciseBack: byId<HTMLButtonElement>('exercise-back-btn'),
-  exerciseVideo: byId<HTMLVideoElement>('exercise-video'),
-  exerciseVideoPlaceholder: byId<HTMLElement>('exercise-video-placeholder'),
-  playerTrainingName: byId<HTMLElement>('player-training-name'),
-  start: byId<HTMLButtonElement>('start-btn'),
-  pause: byId<HTMLButtonElement>('pause-btn'),
-  statusChip: byId<HTMLElement>('status-chip'),
-  musicToggle: byId<HTMLButtonElement>('music-toggle-btn'),
-  playerVideo: byId<HTMLVideoElement>('player-video'),
-  playerVideoPlaceholder: byId<HTMLElement>('player-video-placeholder'),
-  currentTitle: byId<HTMLElement>('current-title'),
-  currentDetail: byId<HTMLElement>('current-detail'),
-  currentRemaining: byId<HTMLElement>('current-remaining'),
-  phasePill: byId<HTMLElement>('phase-pill'),
-  segmentProgressWrap: byId<HTMLElement>('segment-progress'),
-  segmentProgressBar: byId<HTMLElement>('segment-progress-bar'),
-  phaseBlocks: byId<HTMLElement>('phase-blocks'),
-  progressBar: byId<HTMLElement>('progress-bar'),
-  sessionRemaining: byId<HTMLElement>('session-remaining'),
-  playerPlaceholder: byId<HTMLElement>('player-placeholder'),
-  playerMain: byId<HTMLElement>('player-main'),
-  completeXpEarned: byId<HTMLElement>('complete-xp-earned'),
-  completeTrainingTime: byId<HTMLElement>('complete-training-time'),
-  completeStreak: byId<HTMLElement>('complete-streak'),
-  completeTotalXp: byId<HTMLElement>('complete-total-xp'),
-  completeTrainingName: byId<HTMLElement>('complete-training-name'),
-  completeShare: byId<HTMLButtonElement>('complete-share-btn'),
-  completeShareTargets: byId<HTMLElement>('complete-share-targets'),
-  completeShareInstagram: byId<HTMLButtonElement>('complete-share-instagram-btn'),
-  completeShareX: byId<HTMLButtonElement>('complete-share-x-btn'),
-  completeToSelection: byId<HTMLButtonElement>('complete-to-selection'),
-  completeToHistory: byId<HTMLButtonElement>('complete-to-history'),
+  authScreen: queryScreen('auth'),
+  homeScreen: queryScreen('home'),
+  detailsScreen: queryScreen('details'),
+  liveScreen: queryScreen('live'),
+  resultsScreen: queryScreen('results'),
+  profileScreen: queryScreen('profile'),
+  authForm: byId<HTMLFormElement>('auth-form'),
+  authModeLabel: byId<HTMLElement>('auth-mode-label'),
+  authTitle: byId<HTMLElement>('auth-title'),
+  authHelper: byId<HTMLElement>('auth-helper'),
+  authNameRow: byId<HTMLElement>('auth-name-row'),
+  authNameInput: byId<HTMLInputElement>('auth-name-input'),
+  authEmailInput: byId<HTMLInputElement>('auth-email-input'),
+  authPasswordInput: byId<HTMLInputElement>('auth-password-input'),
+  authSubmitBtn: byId<HTMLButtonElement>('auth-submit-btn'),
+  authSwitchCopy: byId<HTMLElement>('auth-switch-copy'),
+  authSwitchBtn: byId<HTMLButtonElement>('auth-switch-btn'),
+  authError: byId<HTMLElement>('auth-error'),
+  homeGreeting: byId<HTMLElement>('home-greeting'),
+  homeSessionCopy: byId<HTMLElement>('home-session-copy'),
+  homeProfileBtn: byId<HTMLButtonElement>('home-profile-btn'),
+  homeCoachName: byId<HTMLElement>('home-coach-name'),
+  homeCoachRole: byId<HTMLElement>('home-coach-role'),
+  homeCoachBio: byId<HTMLElement>('home-coach-bio'),
+  homeTotalSessions: byId<HTMLElement>('home-total-sessions'),
+  coachCard: byId<HTMLButtonElement>('coach-card'),
+  homeNavHome: byId<HTMLButtonElement>('home-nav-home'),
+  homeNavProfile: byId<HTMLButtonElement>('home-nav-profile'),
+  detailsBackBtn: byId<HTMLButtonElement>('details-back-btn'),
+  detailsCoachName: byId<HTMLElement>('details-coach-name'),
+  detailsCoachRole: byId<HTMLElement>('details-coach-role'),
+  detailsTitle: byId<HTMLElement>('details-title'),
+  detailsSubtitle: byId<HTMLElement>('details-subtitle'),
+  detailsSets: byId<HTMLElement>('details-sets'),
+  detailsReps: byId<HTMLElement>('details-reps'),
+  detailsRest: byId<HTMLElement>('details-rest'),
+  detailsFocusList: byId<HTMLElement>('details-focus-list'),
+  detailsTips: byId<HTMLElement>('details-tips'),
+  detailsStartBtn: byId<HTMLButtonElement>('details-start-btn'),
+  liveBackBtn: byId<HTMLButtonElement>('live-back-btn'),
+  voiceToggleBtn: byId<HTMLButtonElement>('voice-toggle-btn'),
+  cameraVideo: byId<HTMLVideoElement>('camera-video'),
+  cameraCanvas: byId<HTMLCanvasElement>('camera-canvas'),
+  orientationChip: byId<HTMLElement>('orientation-chip'),
+  liveCue: byId<HTMLElement>('live-cue'),
+  liveFeedback: byId<HTMLElement>('live-feedback'),
+  cameraError: byId<HTMLElement>('camera-error'),
+  liveSetValue: byId<HTMLElement>('live-set-value'),
+  liveRepValue: byId<HTMLElement>('live-rep-value'),
+  liveValidValue: byId<HTMLElement>('live-valid-value'),
+  livePhaseValue: byId<HTMLElement>('live-phase-value'),
+  liveKneeValue: byId<HTMLElement>('live-knee-value'),
+  liveHipValue: byId<HTMLElement>('live-hip-value'),
+  liveTorsoValue: byId<HTMLElement>('live-torso-value'),
+  liveHeelValue: byId<HTMLElement>('live-heel-value'),
+  checkOrientation: byId<HTMLElement>('check-orientation'),
+  checkStance: byId<HTMLElement>('check-stance'),
+  checkDepth: byId<HTMLElement>('check-depth'),
+  checkHeels: byId<HTMLElement>('check-heels'),
+  restPill: byId<HTMLElement>('rest-pill'),
+  pauseToggleBtn: byId<HTMLButtonElement>('pause-toggle-btn'),
+  quitBtn: byId<HTMLButtonElement>('quit-btn'),
+  resultsName: byId<HTMLElement>('results-name'),
+  resultsTotalReps: byId<HTMLElement>('results-total-reps'),
+  resultsValidReps: byId<HTMLElement>('results-valid-reps'),
+  resultsDepthScore: byId<HTMLElement>('results-depth-score'),
+  resultsPostureScore: byId<HTMLElement>('results-posture-score'),
+  resultsNotes: byId<HTMLElement>('results-notes'),
+  resultsHomeBtn: byId<HTMLButtonElement>('results-home-btn'),
+  resultsProfileBtn: byId<HTMLButtonElement>('results-profile-btn'),
+  profileHomeBtn: byId<HTMLButtonElement>('profile-home-btn'),
+  logoutBtn: byId<HTMLButtonElement>('logout-btn'),
+  profileName: byId<HTMLElement>('profile-name'),
+  profileEmail: byId<HTMLElement>('profile-email'),
+  profileTotalSessions: byId<HTMLElement>('profile-total-sessions'),
+  profileTotalValidReps: byId<HTMLElement>('profile-total-valid-reps'),
+  profileDepthScore: byId<HTMLElement>('profile-depth-score'),
+  profilePostureScore: byId<HTMLElement>('profile-posture-score'),
   historyList: byId<HTMLElement>('history-list'),
-  historyTotalXp: byId<HTMLElement>('history-total-xp'),
-  historyStreak: byId<HTMLElement>('history-streak'),
-  metronomeBack: byId<HTMLButtonElement>('metronome-back-btn'),
-  confirmOverlay: byId<HTMLElement>('confirm-overlay'),
-  confirmMessage: byId<HTMLElement>('confirm-message'),
-  confirmNo: byId<HTMLButtonElement>('confirm-no-btn'),
-  confirmYes: byId<HTMLButtonElement>('confirm-yes-btn')
+  profileNavHome: byId<HTMLButtonElement>('profile-nav-home'),
+  profileNavProfile: byId<HTMLButtonElement>('profile-nav-profile')
 }
 
-const phaseMeta: Record<PhaseKey, PhaseMeta> = {
-  go: { label: 'Vai', tone: 880 },
-  pause: { label: 'Pausa', tone: 720 },
-  return: { label: 'Volta', tone: 900 },
-  rest: { label: 'Descanso', tone: 520 },
-  hold: { label: 'Segura', tone: 760 },
-  setRest: { label: 'Descanso', tone: 460 },
-  prep: { label: 'Prepare-se', tone: 0 }
+function formatPercent(value: number): string {
+  return `${Math.round(value)}%`
 }
 
-const routineColors: Record<Exercise['routine'], string> = {
-  'Push-Up': getComputedStyle(document.documentElement).getPropertyValue('--push') || '#f4a261',
-  'Pull-Up': getComputedStyle(document.documentElement).getPropertyValue('--pull') || '#3fa9f5',
-  Squat: getComputedStyle(document.documentElement).getPropertyValue('--squat') || '#7ddf89',
-  Core: getComputedStyle(document.documentElement).getPropertyValue('--core') || '#e9c46a',
-  Cardio: getComputedStyle(document.documentElement).getPropertyValue('--cardio') || '#f3722c',
-  Mobility: getComputedStyle(document.documentElement).getPropertyValue('--mobility') || '#8ecae6'
+function formatDuration(seconds: number): string {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${mins}:${`${secs}`.padStart(2, '0')}`
 }
 
-const routineLabels: Record<Exercise['routine'], string> = {
-  'Push-Up': 'Empurrar',
-  'Pull-Up': 'Puxar',
-  Squat: 'Agachamento',
-  Core: 'Abdômen',
-  Cardio: 'Cardio',
-  Mobility: 'Mobilidade'
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(new Date(value))
 }
 
-function hasTempo(exercise: Exercise): exercise is TempoExercise {
-  return 'tempo' in exercise
+function refreshUserData(): void {
+  state.activeUser = getActiveUser()
+  state.sessions = state.activeUser ? getSessionsForUser(state.activeUser.email) : []
 }
 
-function hasTime(exercise: Exercise): exercise is TimeExercise {
-  return 'time' in exercise
-}
+function setActiveScreen(screen: ScreenKey): void {
+  state.screen = screen
 
-function formatRoutineLabel(routine: Exercise['routine']): string {
-  return routineLabels[routine] ?? routine
-}
-
-function createTestExercise(exercise: Exercise, group: number): Exercise {
-  const rest = 2
-  if (hasTempo(exercise)) {
-    return {
-      ...exercise,
-      group,
-      sets: 1,
-      reps: 2,
-      rest,
-      baseRest: rest,
-      restMultiplier: 1,
-      tempo: {
-        go: 1,
-        pause: 0,
-        return: 1,
-        rest: 0
-      }
-    }
-  }
-  if (hasTime(exercise)) {
-    return {
-      ...exercise,
-      group,
-      sets: 1,
-      time: 5,
-      rest,
-      baseRest: rest,
-      restMultiplier: 1
-    }
-  }
-  const _exhaustive: never = exercise
-  throw new Error(`Unsupported exercise type: ${String(_exhaustive)}`)
-}
-
-const intensiveProgram = trainingPrograms.intensive
-if (intensiveProgram.kind !== 'intensive') {
-  throw new Error('Programa intensivo inválido.')
-}
-
-const TEST_TRAINING_GROUPS: TrainingGroup[] = intensiveProgram.groups.map(group => ({
-  group: group.group,
-  restMultiplier: group.restMultiplier,
-  exercises: group.exercises.slice(0, 1).map(exercise => createTestExercise(exercise, group.group))
-}))
-
-init()
-
-function init() {
-  historyEntries = loadHistory()
-
-  els.trainingList.addEventListener('click', event => {
-    const target = (event.target as HTMLElement).closest<HTMLElement>('[data-training-id]')
-    const trainingId = target?.dataset.trainingId
-    if (!trainingId) return
-    selectTraining(trainingId)
-    showScreen('details')
-  })
-
-  els.selectTrainings.addEventListener('click', () => {
-    openTrainingRoutineScreen()
-  })
-
-  els.selectProfile.addEventListener('click', () => {
-    openProfileScreen()
-  })
-
-  els.historyTrainings.addEventListener('click', () => {
-    openTrainingRoutineScreen()
-  })
-
-  els.historyProfile.addEventListener('click', () => {
-    openProfileScreen()
-  })
-
-  els.detailExerciseList.addEventListener('click', event => {
-    const target = (event.target as HTMLElement).closest<HTMLElement>('[data-exercise-name]')
-    const exerciseName = target?.dataset.exerciseName
-    if (!exerciseName) return
-    showExerciseDetails(exerciseName)
-  })
-
-  els.detailBack.addEventListener('click', () => {
-    showScreen('select')
-  })
-
-  els.detailStart.addEventListener('click', () => {
-    showScreen('metronome')
-    startSession()
-  })
-
-  els.exerciseBack.addEventListener('click', () => {
-    showScreen('details')
-  })
-
-  els.metronomeBack.addEventListener('click', () => {
-    if (state.status === 'running' || state.status === 'paused') {
-      openTrainingConfirm('leave')
-      return
-    }
-    resetSession()
-    showScreen('details')
-  })
-
-  els.completeToSelection.addEventListener('click', () => {
-    resetSession()
-    openTrainingRoutineScreen()
-  })
-
-  els.completeToHistory.addEventListener('click', () => {
-    openProfileScreen()
-  })
-
-  els.start.addEventListener('click', () => {
-    if (state.status === 'running' || state.status === 'paused') {
-      openTrainingConfirm('reset')
-      return
-    }
-    startSession()
-  })
-
-  els.pause.addEventListener('click', () => {
-    if (state.status === 'running') {
-      pauseSession()
-    } else if (state.status === 'paused') {
-      resumeSession()
-    }
-  })
-
-  els.musicToggle.addEventListener('click', () => {
-    setMusicMuted(!state.musicMuted)
-  })
-
-  els.completeShare.addEventListener('click', () => {
-    els.completeShareTargets.hidden = !els.completeShareTargets.hidden
-  })
-
-  els.completeShareInstagram.addEventListener('click', () => {
-    void shareCompletion('instagram')
-  })
-
-  els.completeShareX.addEventListener('click', () => {
-    void shareCompletion('x')
-  })
-
-  els.confirmNo.addEventListener('click', () => {
-    closeTrainingConfirm()
-  })
-
-  els.confirmYes.addEventListener('click', () => {
-    handleTrainingConfirm()
-  })
-
-  bindSwipeNavigation(els.selectScreen, {
-    left: () => openProfileScreen()
-  })
-
-  bindSwipeNavigation(els.historyScreen, {
-    right: () => openTrainingRoutineScreen()
-  })
-
-  bindSwipeNavigation(els.detailsScreen, {
-    left: () => openTrainingRoutineScreen()
-  })
-
-  bindSwipeNavigation(els.exerciseScreen, {
-    left: () => showScreen('details')
-  })
-
-  if (TRAININGS.length) {
-    selectTraining(TRAININGS[0].id)
-  }
-
-  renderHistory()
-  updateMusicToggle()
-  showScreen('select')
-}
-
-function showScreen(screen: ScreenKey): void {
-  els.screens.forEach(panel => {
+  for (const panel of els.screens) {
     panel.hidden = panel.dataset.screen !== screen
-  })
-  if (screen !== 'complete') {
-    els.completeShareTargets.hidden = true
   }
-  if (screen !== 'metronome') {
-    closeTrainingConfirm()
+}
+
+function setText(element: HTMLElement, value: string): void {
+  element.textContent = value
+}
+
+function setCheck(element: HTMLElement, label: string, status: string, ok: boolean): void {
+  const title = element.querySelector('span')
+  const value = element.querySelector('strong')
+  if (title) title.textContent = label
+  if (value) value.textContent = status
+  element.classList.toggle('is-good', ok)
+  element.classList.toggle('is-bad', !ok)
+}
+
+function showAuthError(message: string): void {
+  els.authError.hidden = message.trim() === ''
+  els.authError.textContent = message
+}
+
+function renderAuth(): void {
+  const isSignup = state.authMode === 'signup'
+
+  els.authModeLabel.textContent = isSignup ? 'Create account' : 'Log in'
+  els.authTitle.textContent = isSignup ? 'Start your Noskip profile' : 'Welcome back to Noskip'
+  els.authHelper.textContent = isSignup
+    ? 'Create a local MVP account so the squat coach can greet you and store your history on this device.'
+    : 'Log in with the local account already stored on this device.'
+  els.authNameRow.hidden = !isSignup
+  els.authSubmitBtn.textContent = isSignup ? 'Create account' : 'Log in'
+  els.authSwitchCopy.textContent = isSignup ? 'Already have an account?' : 'Need an account instead?'
+  els.authSwitchBtn.textContent = isSignup ? 'Log in' : 'Create one'
+  showAuthError('')
+}
+
+function renderHome(): void {
+  const user = state.activeUser
+  if (!user) return
+
+  setText(els.homeGreeting, `${user.name}, your squat coach is ready.`)
+  setText(
+    els.homeSessionCopy,
+    `Today’s protocol is ${squatTraining.session.protocol.sets} sets of ${squatTraining.session.protocol.repsPerSet} reps with ${squatTraining.session.protocol.restSeconds} seconds of rest.`
+  )
+  setText(els.homeCoachName, squatTraining.coach.name)
+  setText(els.homeCoachRole, squatTraining.coach.role)
+  setText(els.homeCoachBio, squatTraining.coach.bio)
+  setText(els.homeTotalSessions, String(state.sessions.length))
+}
+
+function renderDetails(): void {
+  setText(els.detailsCoachName, squatTraining.coach.name)
+  setText(els.detailsCoachRole, squatTraining.coach.role)
+  setText(els.detailsTitle, squatTraining.session.title)
+  setText(els.detailsSubtitle, squatTraining.session.subtitle)
+  setText(els.detailsSets, String(squatTraining.session.protocol.sets))
+  setText(els.detailsReps, String(squatTraining.session.protocol.repsPerSet))
+  setText(els.detailsRest, `${squatTraining.session.protocol.restSeconds}s`)
+
+  els.detailsFocusList.innerHTML = ''
+  els.detailsTips.innerHTML = ''
+
+  for (const item of squatTraining.session.readinessTips) {
+    const li = document.createElement('li')
+    li.textContent = item
+    els.detailsFocusList.append(li)
   }
-  setMainNavActive(screen === 'history' ? 'history' : 'select')
+
+  for (const item of squatTraining.session.techniqueTips) {
+    const li = document.createElement('li')
+    li.textContent = item
+    els.detailsTips.append(li)
+  }
 }
 
-function setButtonStyle(btn: HTMLButtonElement, { primary }: { primary: boolean }): void {
-  if (!btn) return
-  btn.classList.toggle('primary', primary)
-  btn.classList.toggle('ghost', !primary)
-}
+function renderProfile(): void {
+  const user = state.activeUser
+  if (!user) return
 
-function openProfileScreen(): void {
-  renderHistory()
-  showScreen('history')
-}
+  const stats = getProfileStats(state.sessions)
 
-function openTrainingRoutineScreen(): void {
-  showScreen('select')
-}
+  setText(els.profileName, user.name)
+  setText(els.profileEmail, user.email)
+  setText(els.profileTotalSessions, String(stats.totalSessions))
+  setText(els.profileTotalValidReps, String(stats.totalValidReps))
+  setText(els.profileDepthScore, formatPercent(stats.avgDepthScore))
+  setText(els.profilePostureScore, formatPercent(stats.avgPostureScore))
 
-function setMainNavActive(activeScreen: 'select' | 'history'): void {
-  const selectingTrainings = activeScreen === 'select'
-  els.selectTrainings.classList.toggle('is-active', selectingTrainings)
-  els.selectProfile.classList.toggle('is-active', !selectingTrainings)
-  els.historyTrainings.classList.toggle('is-active', selectingTrainings)
-  els.historyProfile.classList.toggle('is-active', !selectingTrainings)
-}
+  els.historyList.innerHTML = ''
 
-function bindSwipeNavigation(element: HTMLElement, handlers: SwipeHandlers): void {
-  let startX = 0
-  let startY = 0
-  let isTracking = false
-
-  element.addEventListener(
-    'touchstart',
-    event => {
-      if (event.touches.length !== 1) return
-      const touch = event.touches[0]
-      startX = touch.clientX
-      startY = touch.clientY
-      isTracking = true
-    },
-    { passive: true }
-  )
-
-  element.addEventListener('touchcancel', () => {
-    isTracking = false
-  })
-
-  element.addEventListener(
-    'touchend',
-    event => {
-      if (!isTracking) return
-      isTracking = false
-      const touch = event.changedTouches[0]
-      if (!touch) return
-
-      const deltaX = touch.clientX - startX
-      const deltaY = touch.clientY - startY
-      if (Math.abs(deltaX) < SWIPE_THRESHOLD_PX) return
-      if (Math.abs(deltaX) < Math.abs(deltaY) * SWIPE_DOMINANCE_RATIO) return
-
-      if (deltaX < 0) {
-        handlers.left?.()
-      } else {
-        handlers.right?.()
-      }
-    },
-    { passive: true }
-  )
-}
-
-function getSelectedTraining(): Training {
-  const training = TRAININGS.find(item => item.id === state.selectedTrainingId) ?? TRAININGS[0]
-  if (!training) throw new Error('No trainings configured')
-  return training
-}
-
-function selectTraining(id: string): void {
-  state.selectedTrainingId = id
-  const training = getSelectedTraining()
-  state.programKey = training.programKey
-  renderTrainingList()
-  renderTrainingDetail()
-  resetSession()
-}
-
-function renderTrainingList(): void {
-  const cards = TRAININGS.map(training => {
-    const summary = computeProgramSummary(training.programKey)
-    const active = training.id === state.selectedTrainingId ? 'active' : ''
-    return `
-      <button class="training-card ${active}" type="button" data-training-id="${training.id}">
-        <div>
-          <h3>${training.name}</h3>
-          <p class="muted small">equipamento: ${training.equipment}</p>
-        </div>
-        <div class="training-stat">
-          <span class="label">Duração</span>
-          <span class="value">${formatSeconds(summary.totalSeconds)}</span>
-        </div>
-      </button>
-    `
-  })
-
-  els.trainingList.innerHTML = cards.join('')
-}
-
-function renderTrainingDetail(): void {
-  const training = getSelectedTraining()
-  const summary = updateDetailStats(training)
-  els.detailTrainingName.textContent = training.name
-  els.detailTrainingDesc.textContent = training.equipment
-  els.detailTrainingDesc.hidden = training.equipment.trim().length === 0
-  els.playerTrainingName.textContent = training.name
-  els.sessionRemaining.textContent = formatSeconds(summary.totalSeconds)
-  updateVideoBlocks(training)
-  renderExerciseList()
-}
-
-function updateVideoBlocks(training: Training): void {
-  const video = training.video
-  updateVideoBlock(els.exerciseVideo, els.exerciseVideoPlaceholder, video)
-  updateVideoBlock(els.playerVideo, els.playerVideoPlaceholder, video)
-}
-
-function updateVideoBlock(
-  videoEl: HTMLVideoElement,
-  placeholderEl: HTMLElement,
-  video?: TrainingVideo
-): void {
-  if (!video) {
-    videoEl.pause()
-    videoEl.removeAttribute('src')
-    videoEl.classList.remove('is-portrait')
-    videoEl.hidden = true
-    placeholderEl.hidden = false
-    videoEl.load()
+  if (state.sessions.length === 0) {
+    const empty = document.createElement('p')
+    empty.className = 'history-empty'
+    empty.textContent = 'No sessions saved yet. Finish your first squat session to populate the profile.'
+    els.historyList.append(empty)
     return
   }
 
-  videoEl.hidden = false
-  placeholderEl.hidden = true
-  videoEl.classList.toggle('is-portrait', video.orientation === 'portrait')
-  if (videoEl.getAttribute('src') !== video.src) {
-    videoEl.pause()
-    videoEl.setAttribute('src', video.src)
-    videoEl.load()
-  }
-}
+  for (const session of state.sessions) {
+    const entry = document.createElement('article')
+    entry.className = 'history-entry'
 
-function updateDetailStats(training: Training): ProgramSummary {
-  const summary = computeProgramSummary(training.programKey)
-  els.totalTime.textContent = formatSeconds(summary.totalSeconds)
-  return summary
-}
-
-function renderExerciseList(): void {
-  const exercises = getProgramExercises(state.programKey)
-  const schedule = buildSchedule(state.programKey)
-  const perExerciseSeconds = schedule.reduce<Record<string, number>>((acc, seg) => {
-    acc[seg.exerciseName] = (acc[seg.exerciseName] || 0) + seg.duration
-    return acc
-  }, {})
-
-  const cards = exercises.map(ex => {
-    const totalSeconds = perExerciseSeconds[ex.name] || 0
-    const color = routineColors[ex.routine] || 'var(--stroke)'
-    const tempo = hasTempo(ex)
-      ? `Tempo ${ex.tempo.go}-${ex.tempo.pause}-${ex.tempo.return}-${ex.tempo.rest}`
-      : null
-    const setsCount = ex.sets ?? 0
-    const volume = hasTempo(ex)
-      ? `${setsCount} x ${ex.reps} repetições`
-      : hasTime(ex)
-      ? `${setsCount} x ${ex.time}s`
-      : `${setsCount} séries`
-    const restLabel = ex.rest > 0 ? `Pausa: ${formatSeconds(ex.rest || 0)}` : ''
-
-    return `
-      <button class="exercise-card" type="button" data-exercise-card="${ex.name}" data-exercise-name="${ex.name}" style="--card-accent:${color}">
-        <div class="meta">
-          <span class="badge">${formatRoutineLabel(ex.routine)}</span>
-          <span class="time">~${formatSeconds(totalSeconds)}</span>
-        </div>
-        <div class="name">${ex.name}</div>
-        <div class="tempo">${volume}${tempo ? ` · ${tempo}` : ''}</div>
-        ${restLabel ? `<div class="tempo">${restLabel}</div>` : ''}
-        ${
-          ex.group
-            ? `<div class="badge">Grupo ${ex.group} · Descanso x${Number(ex.restMultiplier || 1).toFixed(2)}</div>`
-            : ''
-        }
-      </button>
+    const row = document.createElement('div')
+    row.className = 'history-row'
+    row.innerHTML = `
+      <strong>${formatDate(session.completedAt)}</strong>
+      <span class="history-meta">${session.validReps}/${session.totalReps} valid reps</span>
     `
-  })
 
-  els.detailExerciseList.innerHTML = cards.join('')
-}
+    const scores = document.createElement('div')
+    scores.className = 'history-row history-meta'
+    scores.innerHTML = `
+      <span>Depth ${formatPercent(session.depthScore)}</span>
+      <span>Posture ${formatPercent(session.postureScore)}</span>
+      <span>${formatDuration(session.durationSeconds)}</span>
+    `
 
-function showExerciseDetails(exerciseName: string): void {
-  const exercise = getProgramExercises(state.programKey).find(ex => ex.name === exerciseName)
-  if (!exercise) return
-  updateVideoBlocks(getSelectedTraining())
-  els.exerciseDetailTitle.textContent = exercise.name
-  els.exerciseDetailMeta.textContent = formatExerciseMeta(exercise)
-  const tips = exercise.tips?.length ? exercise.tips.map(tip => `• ${tip}`).join('\n') : NO_TIPS_MESSAGE
-  els.exerciseDetailTips.textContent = tips
-  showScreen('exercise')
-}
+    entry.append(row, scores)
 
-function formatExerciseMeta(exercise: Exercise): string {
-  const base = `${formatRoutineLabel(exercise.routine)} · ${exercise.sets} séries`
-  if (hasTempo(exercise)) {
-    const tempo = `${exercise.tempo.go}-${exercise.tempo.pause}-${exercise.tempo.return}-${exercise.tempo.rest}`
-    return `${base} · ${exercise.reps} repetições · Tempo ${tempo}`
-  }
-  if (hasTime(exercise)) {
-    return `${base} · ${exercise.time}s`
-  }
-  return base
-}
-
-function loadHistory(): HistoryEntry[] {
-  if (!('localStorage' in window)) return []
-  const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY)
-  if (!raw) return []
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(isHistoryEntry)
-  } catch {
-    return []
-  }
-}
-
-function isHistoryEntry(value: unknown): value is HistoryEntry {
-  if (!value || typeof value !== 'object') return false
-  const entry = value as Record<string, unknown>
-  return (
-    typeof entry.id === 'string' &&
-    typeof entry.trainingId === 'string' &&
-    typeof entry.trainingName === 'string' &&
-    typeof entry.completedAt === 'string' &&
-    typeof entry.durationSeconds === 'number' &&
-    typeof entry.xpEarned === 'number'
-  )
-}
-
-function saveHistory(entries: HistoryEntry[]): void {
-  if (!('localStorage' in window)) return
-  window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(entries))
-}
-
-function getTotalXp(entries: HistoryEntry[]): number {
-  return entries.reduce((sum, entry) => sum + entry.xpEarned, 0)
-}
-
-function formatStreak(streak: number): string {
-  return `${streak} ${streak === 1 ? 'dia' : 'dias'}`
-}
-
-function getDateKey(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function getCurrentStreak(entries: HistoryEntry[]): number {
-  if (!entries.length) return 0
-  const completedDays = new Set<string>()
-  entries.forEach(entry => {
-    const date = new Date(entry.completedAt)
-    if (!Number.isNaN(date.getTime())) {
-      completedDays.add(getDateKey(date))
+    if (session.notes.length > 0) {
+      const note = document.createElement('p')
+      note.className = 'history-note'
+      note.textContent = session.notes.join(' ')
+      entry.append(note)
     }
-  })
 
-  const cursor = new Date()
-  cursor.setHours(0, 0, 0, 0)
-  let streak = 0
-  while (completedDays.has(getDateKey(cursor))) {
-    streak += 1
-    cursor.setDate(cursor.getDate() - 1)
+    els.historyList.append(entry)
   }
-  return streak
 }
 
-function recordCompletion(): HistoryEntry {
-  const training = getSelectedTraining()
-  const durationSeconds = Math.max(0, Math.round(state.sessionTotalMs / 1000))
-  const xpEarned = Math.round(durationSeconds * training.difficulty * XP_RATE)
-  const entry: HistoryEntry = {
-    id: `session-${Date.now()}`,
-    trainingId: training.id,
-    trainingName: training.name,
+function renderResults(session: StoredSession): void {
+  const user = state.activeUser
+  if (!user) return
+
+  setText(els.resultsName, user.name)
+  setText(els.resultsTotalReps, String(session.totalReps))
+  setText(els.resultsValidReps, String(session.validReps))
+  setText(els.resultsDepthScore, formatPercent(session.depthScore))
+  setText(els.resultsPostureScore, formatPercent(session.postureScore))
+
+  els.resultsNotes.innerHTML = ''
+
+  if (session.notes.length === 0) {
+    const note = document.createElement('div')
+    note.className = 'results-note'
+    note.textContent = 'Clean session. No persistent correction theme was detected.'
+    els.resultsNotes.append(note)
+    return
+  }
+
+  for (const item of session.notes) {
+    const note = document.createElement('div')
+    note.className = 'results-note'
+    note.textContent = item
+    els.resultsNotes.append(note)
+  }
+}
+
+function renderLiveSnapshot(snapshot: EngineSnapshot): void {
+  state.live.snapshot = snapshot
+
+  const liveSetLabel =
+    snapshot.phase === 'SESSION_COMPLETE'
+      ? `${squatTraining.session.protocol.sets} / ${squatTraining.session.protocol.sets}`
+      : `${snapshot.setNumber} / ${squatTraining.session.protocol.sets}`
+
+  setText(els.liveSetValue, liveSetLabel)
+  setText(els.liveRepValue, `${snapshot.repInSet} / ${squatTraining.session.protocol.repsPerSet}`)
+  setText(els.liveValidValue, `${snapshot.validReps} / ${snapshot.totalReps}`)
+  setText(els.livePhaseValue, snapshot.phaseLabel)
+  setText(els.liveCue, snapshot.coachMessage)
+
+  if (snapshot.metrics) {
+    setText(els.liveKneeValue, `${Math.round(snapshot.metrics.kneeAngle)}°`)
+    setText(els.liveHipValue, `${Math.round(snapshot.metrics.hipAngle)}°`)
+    setText(els.liveTorsoValue, `${Math.round(snapshot.metrics.torsoLean)}°`)
+    const heelPercent =
+      snapshot.metrics.bodyHeight === 0
+        ? 0
+        : (snapshot.metrics.effectiveHeelLift / snapshot.metrics.bodyHeight) * 100
+    setText(els.liveHeelValue, `${heelPercent.toFixed(1)}%`)
+    setText(
+      els.liveFeedback,
+      `Tracking ${snapshot.trackedSide ?? 'one'} side · depth ${snapshot.metrics.reachedDepth ? 'hit' : 'pending'} · overall posture ${formatPercent(snapshot.postureScore)}`
+    )
+  } else {
+    setText(els.liveKneeValue, '--')
+    setText(els.liveHipValue, '--')
+    setText(els.liveTorsoValue, '--')
+    setText(els.liveHeelValue, '--')
+    setText(els.liveFeedback, 'Full body visibility is required before the coach starts counting reps.')
+  }
+
+  els.orientationChip.className = 'status-pill'
+
+  if (snapshot.phase === 'REST') {
+    els.orientationChip.classList.add('is-rest')
+    setText(els.orientationChip, 'Rest in progress')
+  } else if (snapshot.orientationAccepted && snapshot.startPostureOk) {
+    els.orientationChip.classList.add('is-ready')
+    setText(els.orientationChip, 'Position ready')
+  } else {
+    setText(els.orientationChip, 'Adjust position')
+  }
+
+  if (snapshot.phase === 'REST') {
+    els.restPill.hidden = false
+    setText(els.restPill, `Rest ${Math.ceil(snapshot.restRemainingMs / 1000)}s`)
+  } else {
+    els.restPill.hidden = true
+  }
+
+  setCheck(els.checkOrientation, 'Orientation', snapshot.orientationAccepted ? 'Accepted' : 'Needs work', snapshot.orientationAccepted)
+  setCheck(els.checkStance, 'Start posture', snapshot.startPostureOk ? 'Ready' : 'Reset tall', snapshot.startPostureOk)
+
+  const depthReady = snapshot.metrics?.reachedDepth ?? false
+  setCheck(els.checkDepth, 'Depth', depthReady ? 'Reached' : 'Pending', depthReady)
+
+  const heelGood = snapshot.metrics ? snapshot.metrics.effectiveHeelLift <= snapshot.metrics.bodyHeight * 0.015 : false
+  setCheck(els.checkHeels, 'Heel control', heelGood ? 'Grounded' : 'Lifting', heelGood)
+
+  els.pauseToggleBtn.textContent = state.live.paused ? 'Resume' : 'Pause'
+  els.voiceToggleBtn.textContent = state.voiceMuted ? 'Voice off' : 'Voice on'
+}
+
+function syncNavigation(): void {
+  const isHome = state.screen === 'home'
+  const isProfile = state.screen === 'profile'
+
+  els.homeNavHome.classList.toggle('is-active', isHome)
+  els.homeNavProfile.classList.toggle('is-active', !isHome)
+  els.profileNavHome.classList.toggle('is-active', !isProfile)
+  els.profileNavProfile.classList.toggle('is-active', isProfile)
+}
+
+function renderApp(): void {
+  renderAuth()
+
+  if (!state.activeUser) {
+    setActiveScreen('auth')
+    return
+  }
+
+  renderHome()
+  renderDetails()
+  renderProfile()
+
+  if (state.latestSession) {
+    renderResults(state.latestSession)
+  }
+
+  setActiveScreen(state.screen)
+  syncNavigation()
+}
+
+function handleEngineEvents(events: { key: string; message: string; interrupt?: boolean }[]): void {
+  for (const event of events) {
+    voiceCoach.speak({
+      key: event.key,
+      message: event.message,
+      interrupt: event.interrupt
+    })
+  }
+}
+
+function syncCanvasToVideo(): void {
+  if (els.cameraVideo.videoWidth === 0 || els.cameraVideo.videoHeight === 0) return
+  if (
+    els.cameraCanvas.width !== els.cameraVideo.videoWidth ||
+    els.cameraCanvas.height !== els.cameraVideo.videoHeight
+  ) {
+    els.cameraCanvas.width = els.cameraVideo.videoWidth
+    els.cameraCanvas.height = els.cameraVideo.videoHeight
+  }
+}
+
+function toCanvasPoint(point: PoseLandmark, width: number, height: number): { x: number; y: number } {
+  return {
+    x: point.x * width,
+    y: point.y * height
+  }
+}
+
+function drawPose(landmarks: PoseLandmark[] | undefined, trackedSide: 'left' | 'right' | null): void {
+  syncCanvasToVideo()
+
+  const context = els.cameraCanvas.getContext('2d')
+  if (!context) return
+
+  const width = els.cameraCanvas.width
+  const height = els.cameraCanvas.height
+
+  context.clearRect(0, 0, width, height)
+
+  if (!landmarks || landmarks.length === 0) return
+
+  const side = trackedSide ?? 'left'
+  const indices =
+    side === 'left'
+      ? [11, 23, 25, 27, 29, 31]
+      : [12, 24, 26, 28, 30, 32]
+
+  const points = indices.map((index) => toCanvasPoint(landmarks[index], width, height))
+
+  context.strokeStyle = side === 'left' ? '#6dd6ff' : '#ffbe6f'
+  context.lineWidth = 8
+  context.lineCap = 'round'
+  context.lineJoin = 'round'
+
+  context.beginPath()
+  context.moveTo(points[0].x, points[0].y)
+  for (let index = 1; index < points.length; index += 1) {
+    context.lineTo(points[index].x, points[index].y)
+  }
+  context.stroke()
+
+  context.fillStyle = '#f5f7fb'
+  for (const point of points) {
+    context.beginPath()
+    context.arc(point.x, point.y, 7, 0, Math.PI * 2)
+    context.fill()
+  }
+}
+
+async function stopLiveResources(): Promise<void> {
+  if (state.live.rafId !== null) {
+    cancelAnimationFrame(state.live.rafId)
+    state.live.rafId = null
+  }
+
+  if (state.live.stream) {
+    for (const track of state.live.stream.getTracks()) {
+      track.stop()
+    }
+    state.live.stream = null
+  }
+
+  if (state.live.pose?.close) {
+    await state.live.pose.close()
+  }
+
+  state.live.pose = null
+  state.live.engine = null
+  state.live.sending = false
+  state.live.paused = false
+  state.live.pausedAtMs = null
+  state.live.pausedDurationMs = 0
+  state.live.snapshot = null
+  state.live.completionHandled = false
+  voiceCoach.stop()
+
+  const context = els.cameraCanvas.getContext('2d')
+  context?.clearRect(0, 0, els.cameraCanvas.width, els.cameraCanvas.height)
+  els.cameraVideo.srcObject = null
+}
+
+async function handleSessionComplete(snapshot: EngineSnapshot): Promise<void> {
+  if (!state.activeUser || state.live.completionHandled) return
+  state.live.completionHandled = true
+
+  const durationSeconds = Math.max(
+    1,
+    Math.round((performance.now() - state.live.startedAtMs - state.live.pausedDurationMs) / 1000)
+  )
+
+  const notes = Array.from(
+    new Set(
+      snapshot.results
+        .flatMap((result) => result.feedback)
+        .filter((message) => message.trim() !== '')
+    )
+  ).slice(0, 3)
+
+  const session: StoredSession = {
+    id: crypto.randomUUID(),
+    userEmail: state.activeUser.email,
     completedAt: new Date().toISOString(),
     durationSeconds,
-    xpEarned
+    totalReps: snapshot.totalReps,
+    validReps: snapshot.validReps,
+    invalidReps: snapshot.invalidReps,
+    depthScore: snapshot.depthScore,
+    postureScore: snapshot.postureScore,
+    notes,
+    totalSets: squatTraining.session.protocol.sets,
+    repsPerSet: squatTraining.session.protocol.repsPerSet
   }
-  historyEntries = [entry, ...historyEntries]
-  saveHistory(historyEntries)
-  return entry
+
+  saveSession(session)
+  refreshUserData()
+  state.latestSession = session
+  renderResults(session)
+  await stopLiveResources()
+  setActiveScreen('results')
 }
 
-function renderCompletion(entry: HistoryEntry): void {
-  latestCompletionEntry = entry
-  const totalXp = getTotalXp(historyEntries)
-  const streak = getCurrentStreak(historyEntries)
-  els.completeTrainingName.textContent = entry.trainingName
-  els.completeXpEarned.textContent = `${entry.xpEarned} XP`
-  els.completeTrainingTime.textContent = formatSeconds(entry.durationSeconds)
-  els.completeStreak.textContent = formatStreak(streak)
-  els.completeTotalXp.textContent = `${totalXp} XP`
-  els.completeShareTargets.hidden = true
-}
+async function handlePoseResults(results: PoseResults): Promise<void> {
+  if (!state.live.engine) return
 
-function renderHistory(): void {
-  const totalXp = getTotalXp(historyEntries)
-  const streak = getCurrentStreak(historyEntries)
-  els.historyTotalXp.textContent = `${totalXp} XP`
-  els.historyStreak.textContent = formatStreak(streak)
+  drawPose(results.poseLandmarks, state.live.snapshot?.trackedSide ?? null)
 
-  if (!historyEntries.length) {
-    els.historyList.innerHTML = '<p class="muted small">Nenhum treino concluído ainda.</p>'
+  if (state.live.paused) {
+    if (state.live.snapshot) renderLiveSnapshot(state.live.snapshot)
     return
   }
 
-  const items = historyEntries
-    .map(entry => {
-      const date = new Date(entry.completedAt)
-      const dateLabel = date.toLocaleString(undefined, {
-        dateStyle: 'medium',
-        timeStyle: 'short'
-      })
-      return `
-        <div class="history-item">
-          <div class="title">${entry.trainingName}</div>
-          <div class="meta">
-            <span>${dateLabel}</span>
-            <span>${formatSeconds(entry.durationSeconds)} · ${entry.xpEarned} XP</span>
-          </div>
-        </div>
-      `
+  const now = performance.now()
+
+  const update =
+    results.poseLandmarks && results.poseLandmarks.length > 0
+      ? state.live.engine.processLandmarks(results.poseLandmarks as PoseLandmark[], now)
+      : state.live.engine.tickWithoutPose(now)
+
+  renderLiveSnapshot(update.snapshot)
+  handleEngineEvents(update.events)
+
+  if (update.snapshot.phase === 'SESSION_COMPLETE') {
+    await handleSessionComplete(update.snapshot)
+  }
+}
+
+async function startPoseLoop(): Promise<void> {
+  const tick = async (): Promise<void> => {
+    if (!state.live.pose || !state.live.stream) return
+    state.live.rafId = requestAnimationFrame(() => {
+      void tick()
     })
-    .join('')
 
-  els.historyList.innerHTML = items
-}
+    if (state.live.sending || els.cameraVideo.readyState < 2) return
 
-function cloneExercise(exercise: Exercise): Exercise {
-  if (hasTempo(exercise)) {
-    return {
-      ...exercise,
-      tempo: { ...exercise.tempo }
+    state.live.sending = true
+    try {
+      await state.live.pose.send({ image: els.cameraVideo })
+    } catch (error) {
+      els.cameraError.hidden = false
+      els.cameraError.textContent = error instanceof Error ? error.message : 'Pose processing failed.'
+    } finally {
+      state.live.sending = false
     }
   }
-  if (hasTime(exercise)) {
-    return { ...exercise }
-  }
-  return exercise
+
+  await tick()
 }
 
-function getProgramDefinition(key: ProgramKey): TrainingProgram {
-  if (key === 'test') {
-    return { kind: 'intensive', groups: TEST_TRAINING_GROUPS }
-  }
-  return trainingPrograms[key]
-}
-
-function getProgramExercises(key: ProgramKey): Exercise[] {
-  const program = getProgramDefinition(key)
-  if (program.kind === 'sequence') {
-    const seen = new Set<string>()
-    return program.sequence
-      .filter(ex => {
-        if (seen.has(ex.name)) return false
-        seen.add(ex.name)
-        return true
-      })
-      .map(ex => cloneExercise(ex))
-  }
-
-  return program.groups.flatMap((group: TrainingGroup) =>
-    group.exercises.map(ex => ({
-      ...cloneExercise(ex),
-      group: group.group
-    }))
-  )
-}
-
-function computeProgramSummary(programKey: ProgramKey): ProgramSummary {
-  const exercises = getProgramExercises(programKey)
-  const schedule = buildSchedule(programKey)
-  const totalSeconds = schedule.reduce((sum, seg) => sum + seg.duration, 0)
-  const totalSets = exercises.reduce((sum, ex) => sum + (ex.sets || 0), 0)
-  const segmentCount = schedule.length
-  return { totalSeconds, totalSets, segmentCount, exercisesCount: exercises.length }
-}
-
-function createSetSegments(exercise: Exercise, setNumber: number, includeSetRest = true): ScheduleSegment[] {
-  const segs: ScheduleSegment[] = []
-
-  if (hasTempo(exercise)) {
-    const phases: { key: PhaseKey; duration: number }[] = [
-      { key: 'go', duration: exercise.tempo.go || 0 },
-      { key: 'pause', duration: exercise.tempo.pause || 0 },
-      { key: 'return', duration: exercise.tempo.return || 0 },
-      { key: 'rest', duration: exercise.tempo.rest || 0 }
-    ]
-
-    for (let rep = 1; rep <= (exercise.reps || 0); rep++) {
-      phases.forEach(phase => {
-        if (phase.duration <= 0) return
-        segs.push({
-          exerciseName: exercise.name,
-          routine: exercise.routine,
-          set: setNumber,
-          totalSets: exercise.sets,
-          rep,
-          totalReps: exercise.reps,
-          phase: phase.key,
-          type: phase.key === 'rest' ? 'micro-rest' : 'movement',
-          duration: phase.duration,
-          group: exercise.group || null,
-          tempoParts: {
-            go: exercise.tempo.go || 0,
-            pause: exercise.tempo.pause || 0,
-            return: exercise.tempo.return || 0,
-            rest: exercise.tempo.rest || 0
-          }
-        })
-      })
-    }
-  } else if (hasTime(exercise) && exercise.time) {
-    segs.push({
-      exerciseName: exercise.name,
-      routine: exercise.routine,
-      set: setNumber,
-      totalSets: exercise.sets,
-      rep: null,
-      totalReps: null,
-      phase: 'hold',
-      type: 'hold',
-      duration: exercise.time,
-      group: exercise.group || null,
-      tempoParts: {
-        hold: exercise.time || 0
-      }
-    })
-  }
-
-  if (includeSetRest && setNumber < (exercise.sets || 0) && exercise.rest > 0) {
-    const restBetweenSets = typeof exercise.rest === 'number' ? exercise.rest : 0
-    segs.push({
-      exerciseName: exercise.name,
-      routine: exercise.routine,
-      set: setNumber,
-      totalSets: exercise.sets,
-      rep: null,
-      totalReps: null,
-      phase: 'setRest',
-      type: 'rest',
-      duration: restBetweenSets,
-      group: exercise.group || null,
-      tempoParts: {
-        setRest: restBetweenSets
-      }
-    })
-  }
-
-  return segs
-}
-
-function createPrepSegment(): ScheduleSegment {
-  return {
-    exerciseName: 'Prepare-se',
-    routine: 'Cardio',
-    set: 0,
-    totalSets: 0,
-    rep: null,
-    totalReps: null,
-    phase: 'prep',
-    type: 'rest',
-    duration: PREP_DELAY_SECONDS,
-    group: null,
-    tempoParts: {
-      hold: PREP_DELAY_SECONDS
-    }
-  }
-}
-
-function buildSchedule(programKey: ProgramKey): ScheduleSegment[] {
-  const program = getProgramDefinition(programKey)
-  if (program.kind === 'sequence') {
-    return buildSequenceSchedule(program.sequence)
-  }
-  return buildIntensiveSchedule(program.groups)
-}
-
-function buildIntensiveSchedule(groups: TrainingGroup[]): ScheduleSegment[] {
-  const schedule: ScheduleSegment[] = []
-  const items: { exercise: Exercise; round: number }[] = []
-
-  groups.forEach((group: TrainingGroup) => {
-    const exercises = group.exercises
-    const maxSets = Math.max(...exercises.map(ex => ex.sets || 0))
-    for (let round = 1; round <= maxSets; round++) {
-      exercises.forEach(exercise => {
-        if (round > (exercise.sets || 0)) return
-        items.push({ exercise, round })
-      })
-    }
-  })
-
-  items.forEach((item, idx) => {
-    const segments = createSetSegments(item.exercise, item.round, true)
-    schedule.push(...segments)
-
-    const restBetweenSets = typeof item.exercise.rest === 'number' ? item.exercise.rest : 0
-    if (restBetweenSets <= 0) return
-    const hasNextExercise = idx < items.length - 1
-    const endsWithRest = segments[segments.length - 1]?.phase === 'setRest'
-    if (hasNextExercise && !endsWithRest) {
-      schedule.push({
-        exerciseName: item.exercise.name,
-        routine: item.exercise.routine,
-        set: item.round,
-        totalSets: item.exercise.sets,
-        rep: null,
-        totalReps: null,
-        phase: 'setRest',
-        type: 'rest',
-        duration: restBetweenSets,
-        group: item.exercise.group || null,
-        tempoParts: {
-          setRest: restBetweenSets
-        }
-      })
-    }
-  })
-  if (PREP_DELAY_SECONDS > 0) schedule.unshift(createPrepSegment())
-  return schedule
-}
-
-function createRestSegment(exercise: Exercise, setNumber: number, restSeconds: number): ScheduleSegment {
-  return {
-    exerciseName: exercise.name,
-    routine: exercise.routine,
-    set: setNumber,
-    totalSets: exercise.sets,
-    rep: null,
-    totalReps: null,
-    phase: 'setRest',
-    type: 'rest',
-    duration: restSeconds,
-    group: exercise.group || null,
-    tempoParts: {
-      setRest: restSeconds
-    }
-  }
-}
-
-function buildSequenceSchedule(sequence: Exercise[]): ScheduleSegment[] {
-  const schedule: ScheduleSegment[] = []
-  const totalsByName = sequence.reduce<Record<string, number>>((acc, exercise) => {
-    acc[exercise.name] = (acc[exercise.name] ?? 0) + 1
-    return acc
-  }, {})
-  const occurrenceByName: Record<string, number> = {}
-
-  sequence.forEach((exercise, index) => {
-    occurrenceByName[exercise.name] = (occurrenceByName[exercise.name] ?? 0) + 1
-    const setNumber = occurrenceByName[exercise.name]
-    const totalSets = totalsByName[exercise.name] || exercise.sets || 1
-    const resolved = totalSets !== exercise.sets ? { ...exercise, sets: totalSets } : exercise
-    const segments = createSetSegments(resolved, setNumber, false)
-    schedule.push(...segments)
-
-    const restAfter = typeof resolved.rest === 'number' ? resolved.rest : 0
-    const hasNext = index < sequence.length - 1
-    if (hasNext && restAfter > 0) {
-      schedule.push(createRestSegment(resolved, setNumber, restAfter))
-    }
-  })
-
-  if (PREP_DELAY_SECONDS > 0) schedule.unshift(createPrepSegment())
-  return schedule
-}
-
-function startSession() {
-  if (state.animationId) cancelAnimationFrame(state.animationId)
-  state.animationId = null
-  state.schedule = buildSchedule(state.programKey)
-  state.pointer = 0
-  state.completedMs = 0
-  state.lastCountdownSecond = null
-  const sessionTotalSeconds = state.schedule.reduce((sum, seg) => sum + seg.duration, 0)
-  state.sessionTotalMs = sessionTotalSeconds * 1000
-
-  if (!state.schedule.length) {
-    els.currentRemaining.textContent = '--'
-    state.status = 'idle'
-    updateStatusChip()
+async function startLiveSession(): Promise<void> {
+  if (!state.activeUser) {
+    setActiveScreen('auth')
     return
   }
 
-  state.status = 'running'
-  updateStatusChip()
-  els.start.textContent = 'Resetar'
-  els.pause.textContent = 'Pausar'
-  els.pause.disabled = false
-  els.sessionRemaining.textContent = formatSeconds(Math.ceil(state.sessionTotalMs / 1000))
-  setPlayerActive(true)
-  startMusic()
-  startSegment(state.schedule[state.pointer])
-}
+  await stopLiveResources()
 
-function pauseSession() {
-  if (state.animationId) cancelAnimationFrame(state.animationId)
-  state.animationId = null
-  state.status = 'paused'
-  updateStatusChip()
-  els.pause.textContent = 'Retomar'
-  pauseMusic()
-}
+  setActiveScreen('live')
+  els.cameraError.hidden = true
+  els.cameraError.textContent = ''
 
-function resumeSession() {
-  if (!state.schedule.length) return
-  state.status = 'running'
-  updateStatusChip()
-  els.pause.textContent = 'Pausar'
-  resumeMusic()
-  const elapsedBeforePause = state.segmentDurationMs - state.remainingMs
-  state.segmentStartedAt = performance.now() - elapsedBeforePause
-  state.lastCountdownSecond = null
-  const current = currentSegment()
-  if (current) {
-    playCueTone(current)
-    updatePlayerUI()
-    state.animationId = requestAnimationFrame(tick)
-  }
-}
-
-function resetSession(updateChip = true): void {
-  if (state.animationId) cancelAnimationFrame(state.animationId)
-  state.animationId = null
-  state.status = 'idle'
-  state.schedule = []
-  state.pointer = 0
-  state.completedMs = 0
-  state.sessionTotalMs = 0
-  state.segmentDurationMs = 0
-  state.remainingMs = 0
-  els.start.textContent = 'Iniciar'
-  els.pause.textContent = 'Pausar'
-  els.pause.disabled = true
-  els.currentTitle.textContent = 'Pronto para começar'
-  els.currentDetail.textContent = 'Toque em iniciar para começar o treino.'
-  els.currentRemaining.textContent = '--'
-  setPhasePill(null)
-  els.progressBar.style.width = '0%'
-  els.segmentProgressBar.style.width = '0%'
-  els.segmentProgressWrap.hidden = true
-  els.phaseBlocks.hidden = true
-  const summary = computeProgramSummary(state.programKey)
-  els.sessionRemaining.textContent = formatSeconds(summary.totalSeconds)
-  if (updateChip) updateStatusChip()
-  clearActiveCards()
-  setPlayerActive(false)
-  pauseMusic(true)
-}
-
-function openTrainingConfirm(action: ConfirmAction): void {
-  if (state.status === 'running') {
-    pauseSession()
-  }
-  pendingConfirmAction = action
-  els.confirmMessage.textContent = EXIT_TRAINING_MESSAGE
-  els.confirmOverlay.hidden = false
-}
-
-function closeTrainingConfirm(): void {
-  pendingConfirmAction = null
-  els.confirmOverlay.hidden = true
-}
-
-function handleTrainingConfirm(): void {
-  const action = pendingConfirmAction
-  closeTrainingConfirm()
-  if (!action) return
-  if (action === 'leave') {
-    resetSession()
-    showScreen('details')
+  if (typeof Pose === 'undefined') {
+    els.cameraError.hidden = false
+    els.cameraError.textContent = 'MediaPipe Pose could not be loaded in this browser.'
     return
   }
-  resetSession()
-}
-
-function setPlayerActive(isActive: boolean): void {
-  els.playerMain.hidden = !isActive
-  els.playerPlaceholder.hidden = isActive
-}
-
-function startSegment(segment: ScheduleSegment): void {
-  state.segmentDurationMs = segment.duration * 1000
-  state.remainingMs = state.segmentDurationMs
-  state.segmentStartedAt = performance.now()
-  state.lastCountdownSecond = null
-  playCueTone(segment)
-  els.segmentProgressBar.style.width = '0%'
-  updatePlayerUI()
-  tick()
-}
-
-function tick(now?: number): void {
-  if (state.status !== 'running') return
-
-  if (!now) {
-    state.animationId = requestAnimationFrame(tick)
-    return
-  }
-
-  const elapsed = now - state.segmentStartedAt
-  state.remainingMs = Math.max(0, state.segmentDurationMs - elapsed)
-
-  updatePlayerUI()
-  handleCountdownBeep()
-
-  if (state.remainingMs <= 0) {
-    advanceSegment()
-    return
-  }
-
-  state.animationId = requestAnimationFrame(tick)
-}
-
-function advanceSegment() {
-  state.completedMs += state.segmentDurationMs
-  state.pointer += 1
-
-  if (state.pointer >= state.schedule.length) {
-    finishSession()
-    return
-  }
-
-  const next = state.schedule[state.pointer]
-  startSegment(next)
-}
-
-function finishSession() {
-  if (state.animationId) cancelAnimationFrame(state.animationId)
-  state.animationId = null
-  state.status = 'done'
-  updateStatusChip()
-  els.pause.disabled = true
-  els.currentRemaining.textContent = '00:00'
-  els.sessionRemaining.textContent = formatSeconds(0)
-  els.progressBar.style.width = '100%'
-  els.segmentProgressBar.style.width = '100%'
-  setPhasePill(null, { label: 'Concluído', tone: 0 })
-  playTone(1020, 0.25)
-  pauseMusic(true)
-
-  const entry = recordCompletion()
-  renderCompletion(entry)
-  renderHistory()
-  showScreen('complete')
-}
-
-function currentSegment(): ScheduleSegment | undefined {
-  return state.schedule[state.pointer]
-}
-
-function updatePlayerUI(): void {
-  const segment = currentSegment()
-  const remainingSec = Math.max(0, Math.ceil(state.remainingMs / 1000))
-  els.currentRemaining.textContent = remainingSec ? formatSeconds(remainingSec) : '00:00'
-
-  if (!segment) {
-    els.segmentProgressBar.style.width = '0%'
-    els.phaseBlocks.innerHTML = ''
-    els.segmentProgressWrap.hidden = true
-    els.phaseBlocks.hidden = true
-    return
-  }
-
-  const phase = phaseMeta[segment.phase] ?? { label: segment.phase, tone: 0 }
-  const repText =
-    segment.totalReps && segment.totalReps > 1 && segment.rep
-      ? `Repetição ${segment.rep}/${segment.totalReps}`
-      : ''
-  const setText =
-    segment.totalSets && segment.totalSets > 1 ? `Série ${segment.set}/${segment.totalSets}` : ''
-  const setRep = [setText, repText].filter(Boolean).join(' · ')
-
-  els.currentTitle.textContent = `${segment.exerciseName}`
-  els.currentDetail.textContent = setRep || ''
-  setPhasePill(segment, phase)
-  renderPhaseBlocks(segment)
-
-  const remainingSessionMs =
-    (state.sessionTotalMs || 0) - (state.completedMs + (state.segmentDurationMs - state.remainingMs))
-  els.sessionRemaining.textContent = formatSeconds(Math.max(0, Math.ceil(remainingSessionMs / 1000)))
-
-  const progress =
-    ((state.completedMs + (state.segmentDurationMs - state.remainingMs)) / (state.sessionTotalMs || 1)) * 100
-  els.progressBar.style.width = `${Math.min(100, progress)}%`
-  const segmentProgress =
-    ((state.segmentDurationMs - state.remainingMs) / (state.segmentDurationMs || 1)) * 100
-  els.segmentProgressBar.style.width = `${Math.min(100, segmentProgress)}%`
-
-  const showRestProgress = segment.type === 'rest'
-  els.segmentProgressWrap.hidden = !showRestProgress
-  els.phaseBlocks.hidden = showRestProgress
-
-  highlightActiveCard(segment.exerciseName)
-  renderNextDuringRest()
-}
-
-function formatSeconds(totalSeconds: number): string {
-  const secs = Math.max(0, Math.round(totalSeconds))
-  const m = Math.floor(secs / 60)
-  const s = secs % 60
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-}
-
-function setPhasePill(segment: ScheduleSegment | null, phase?: PhaseMeta): void {
-  const pill = els.phasePill
-  pill.className = 'phase-pill'
-  if (!segment) {
-    pill.textContent = phase?.label ?? 'Pronto'
-    if (phase) pill.classList.add('rest')
-    return
-  }
-  const typeLabel = segment.type
-  const typeClass = typeLabel.includes('rest')
-    ? 'rest'
-    : typeLabel === 'hold'
-    ? 'hold'
-    : 'movement'
-  pill.classList.add(typeClass)
-  pill.textContent = phase?.label || segment.phase || 'Etapa'
-}
-
-function findRepRange(pointer: number): { start: number; end: number } {
-  const seg = state.schedule[pointer]
-  if (!seg) return { start: pointer, end: pointer }
-  let start = pointer
-  while (start - 1 >= 0) {
-    const prev = state.schedule[start - 1]
-    if (
-      prev.exerciseName === seg.exerciseName &&
-      prev.set === seg.set &&
-      prev.rep === seg.rep
-    ) {
-      start--
-    } else break
-  }
-  let end = pointer
-  while (end + 1 < state.schedule.length) {
-    const next = state.schedule[end + 1]
-    if (
-      next.exerciseName === seg.exerciseName &&
-      next.set === seg.set &&
-      next.rep === seg.rep
-    ) {
-      end++
-    } else break
-  }
-  return { start, end }
-}
-
-function renderPhaseBlocks(segment: ScheduleSegment): void {
-  const tempoParts = segment.tempoParts || {}
-  const order: PhaseKey[] = ['go', 'pause', 'return', 'rest', 'hold', 'setRest']
-  const colorMap: Record<PhaseKey, string> = {
-    go: 'var(--accent)',
-    pause: 'var(--accent-2)',
-    return: '#8be0ff',
-    rest: 'rgba(255,255,255,0.3)',
-    setRest: 'rgba(255,255,255,0.3)',
-    hold: 'var(--accent)',
-    prep: 'rgba(255,255,255,0.3)'
-  }
-
-  let unitCounter = 0
-  const blocks: { phase: PhaseKey; color: string | null; unitIndex: number }[] = []
-  order.forEach(key => {
-    const duration = Math.round(tempoParts[key] || 0)
-    if (duration <= 0) return
-    for (let i = 0; i < duration; i++) {
-      blocks.push({
-        phase: key,
-        color: colorMap[key] || 'var(--accent)',
-        unitIndex: unitCounter
-      })
-      unitCounter++
-    }
-  })
-
-  if (!blocks.length) {
-    els.phaseBlocks.innerHTML = '<span class="phase-block empty"></span>'
-    return
-  }
-
-  const { start } = findRepRange(state.pointer)
-  let elapsedBeforeCurrent = 0
-  for (let i = start; i < state.pointer; i++) {
-    elapsedBeforeCurrent += (state.schedule[i].duration || 0)
-  }
-  const currentElapsed = (state.segmentDurationMs - state.remainingMs) / 1000
-  const repElapsed = elapsedBeforeCurrent + currentElapsed
-  const unitIndex = Math.max(0, Math.min(unitCounter - 1, Math.floor(repElapsed)))
-  const currentBlockIndex = blocks.findIndex(b => b.unitIndex === unitIndex)
-
-  const html = blocks
-    .map((block, idx) => {
-      const cls = ['phase-block']
-      if (idx === currentBlockIndex) cls.push('current')
-      const style = block.color ? `style="background:${block.color}"` : ''
-      return `<span class="${cls.join(' ')}" ${style}></span>`
-    })
-    .join('')
-
-  els.phaseBlocks.innerHTML = html
-}
-
-function updateStatusChip(): void {
-  els.statusChip.classList.remove('is-paused', 'is-running', 'is-idle')
-  if (state.status === 'running') {
-    els.statusChip.classList.add('is-running')
-    els.statusChip.setAttribute('aria-label', 'Em andamento')
-  } else if (state.status === 'paused') {
-    els.statusChip.classList.add('is-paused')
-    els.statusChip.setAttribute('aria-label', 'Pausado')
-  } else if (state.status === 'done') {
-    els.statusChip.classList.add('is-idle')
-    els.statusChip.setAttribute('aria-label', 'Concluído')
-  } else {
-    els.statusChip.classList.add('is-idle')
-    els.statusChip.setAttribute('aria-label', 'Pronto')
-  }
-  updateButtons()
-}
-
-function updateButtons(): void {
-  if (state.status === 'running') {
-    setButtonStyle(els.pause, { primary: true })
-    setButtonStyle(els.start, { primary: false })
-  } else if (state.status === 'paused') {
-    setButtonStyle(els.pause, { primary: true })
-    setButtonStyle(els.start, { primary: false })
-  } else {
-    setButtonStyle(els.pause, { primary: false })
-    setButtonStyle(els.start, { primary: true })
-  }
-}
-
-function highlightActiveCard(name?: string): void {
-  clearActiveCards()
-  if (!name) return
-  const card = els.detailExerciseList.querySelector(`[data-exercise-card="${name}"]`)
-  if (card) card.classList.add('is-live')
-}
-
-function clearActiveCards(): void {
-  els.detailExerciseList.querySelectorAll('.exercise-card.is-live').forEach(card => card.classList.remove('is-live'))
-}
-
-function renderNextDuringRest(): void {
-  const current = currentSegment()
-  if (!current || (current.phase !== 'setRest' && current.phase !== 'prep')) return
-  const next = state.schedule[state.pointer + 1]
-  if (!next) return
-  const nextPhase = phaseMeta[next.phase] ?? { label: next.phase, tone: 0 }
-  const nextSetRep = [
-    next.totalSets && next.totalSets > 1 ? `Série ${next.set}/${next.totalSets}` : '',
-    next.totalReps && next.totalReps > 1 && next.rep
-      ? `Repetição ${next.rep}/${next.totalReps}`
-      : ''
-  ]
-    .filter(Boolean)
-    .join(' · ')
-
-  els.currentTitle.textContent = `Próximo: ${next.exerciseName}`
-  els.currentDetail.textContent = [nextPhase.label, nextSetRep].filter(Boolean).join(' • ')
-}
-
-function buildShareCardStats(entry: HistoryEntry): ShareCardStats {
-  return {
-    trainingName: entry.trainingName,
-    xpEarned: entry.xpEarned,
-    sessionTime: formatSeconds(entry.durationSeconds),
-    streak: getCurrentStreak(historyEntries),
-    totalXp: getTotalXp(historyEntries)
-  }
-}
-
-function buildShareMessage(stats: ShareCardStats): string {
-  return [
-    `NoSkip | ${stats.trainingName}`,
-    `XP: ${stats.xpEarned}`,
-    `Tempo: ${stats.sessionTime}`,
-    `Streak: ${formatStreak(stats.streak)}`,
-    `Total XP: ${stats.totalXp}`
-  ].join(' · ')
-}
-
-async function shareCompletion(target: ShareTarget): Promise<void> {
-  const entry = latestCompletionEntry
-  if (!entry) return
 
   try {
-    const stats = buildShareCardStats(entry)
-    const message = buildShareMessage(stats)
-    const blob = await createShareCardBlob(stats)
-    const filename = `noskip-${Date.now()}.png`
-    const file = new File([blob], filename, { type: 'image/png' })
-    const shared = await shareNatively(file, message)
-
-    if (!shared) {
-      downloadBlob(blob, filename)
-      openShareFallback(target, message)
-    }
-  } catch {
-    // silent failure keeps UI responsive even when share APIs are unavailable
-  } finally {
-    els.completeShareTargets.hidden = true
-  }
-}
-
-async function shareNatively(file: File, message: string): Promise<boolean> {
-  const nav = navigator as Navigator & {
-    share?: (data: ShareData) => Promise<void>
-    canShare?: (data: ShareData) => boolean
-  }
-  if (!nav.share) return false
-
-  try {
-    const supportsFiles = typeof nav.canShare === 'function' ? nav.canShare({ files: [file] }) : false
-    if (supportsFiles) {
-      await nav.share({
-        title: 'NoSkip',
-        text: message,
-        files: [file]
-      })
-      return true
-    }
-    await nav.share({ title: 'NoSkip', text: message })
-    return true
-  } catch {
-    return false
-  }
-}
-
-function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  document.body.append(anchor)
-  anchor.click()
-  anchor.remove()
-  URL.revokeObjectURL(url)
-}
-
-function openShareFallback(target: ShareTarget, message: string): void {
-  if (navigator.clipboard) {
-    void navigator.clipboard.writeText(message).catch(() => undefined)
-  }
-  if (target === 'x') {
-    const url = `https://x.com/intent/tweet?text=${encodeURIComponent(message)}`
-    window.open(url, '_blank', 'noopener')
-    return
-  }
-  window.open('https://www.instagram.com/', '_blank', 'noopener')
-}
-
-async function createShareCardBlob(stats: ShareCardStats): Promise<Blob> {
-  const canvas = document.createElement('canvas')
-  canvas.width = SHARE_CARD_WIDTH
-  canvas.height = SHARE_CARD_HEIGHT
-
-  const ctx = canvas.getContext('2d')
-  if (!ctx) {
-    throw new Error('Canvas context unavailable.')
-  }
-
-  drawShareCard(ctx, stats, canvas.width, canvas.height)
-  return canvasToBlob(canvas)
-}
-
-function drawShareCard(
-  ctx: CanvasRenderingContext2D,
-  stats: ShareCardStats,
-  width: number,
-  height: number
-): void {
-  const background = ctx.createLinearGradient(0, 0, width, height)
-  background.addColorStop(0, '#090f1d')
-  background.addColorStop(1, '#101c33')
-  ctx.fillStyle = background
-  ctx.fillRect(0, 0, width, height)
-
-  const glowA = ctx.createRadialGradient(width * 0.1, height * 0.12, 10, width * 0.1, height * 0.12, width * 0.62)
-  glowA.addColorStop(0, 'rgba(14, 222, 196, 0.34)')
-  glowA.addColorStop(1, 'rgba(14, 222, 196, 0)')
-  ctx.fillStyle = glowA
-  ctx.fillRect(0, 0, width, height)
-
-  const glowB = ctx.createRadialGradient(width * 0.84, height * 0.06, 10, width * 0.84, height * 0.06, width * 0.5)
-  glowB.addColorStop(0, 'rgba(255, 140, 66, 0.34)')
-  glowB.addColorStop(1, 'rgba(255, 140, 66, 0)')
-  ctx.fillStyle = glowB
-  ctx.fillRect(0, 0, width, height)
-
-  const panelX = 62
-  const panelY = 62
-  const panelWidth = width - panelX * 2
-  const panelHeight = height - panelY * 2
-
-  drawRoundedRect(ctx, panelX, panelY, panelWidth, panelHeight, 40)
-  ctx.fillStyle = 'rgba(8, 15, 30, 0.9)'
-  ctx.fill()
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)'
-  ctx.lineWidth = 2
-  ctx.stroke()
-
-  ctx.fillStyle = '#9bc0e3'
-  ctx.font = '700 30px "Space Grotesk", "DM Sans", sans-serif'
-  ctx.textAlign = 'left'
-  ctx.fillText('RESULTADO NO SKIP', panelX + 52, panelY + 92)
-
-  ctx.fillStyle = '#f4f8ff'
-  ctx.font = '800 58px "Space Grotesk", "DM Sans", sans-serif'
-  const textY = drawWrappedText(ctx, stats.trainingName, panelX + 52, panelY + 158, panelWidth - 104, 68, 2)
-
-  const cardWidth = (panelWidth - 124) / 2
-  const cardHeight = 166
-  const cardTop = textY + 42
-  const left = panelX + 52
-  const right = left + cardWidth + 20
-
-  drawStatCard(ctx, {
-    x: left,
-    y: cardTop,
-    width: cardWidth,
-    height: cardHeight,
-    label: 'XP',
-    value: `${stats.xpEarned}`,
-    accent: '#3fa9f5',
-    fill: 'rgba(63, 169, 245, 0.15)'
-  })
-
-  drawStatCard(ctx, {
-    x: right,
-    y: cardTop,
-    width: cardWidth,
-    height: cardHeight,
-    label: 'TEMPO',
-    value: stats.sessionTime,
-    accent: '#6dd6ff',
-    fill: 'rgba(109, 214, 255, 0.15)'
-  })
-
-  drawStatCard(ctx, {
-    x: left,
-    y: cardTop + cardHeight + 20,
-    width: cardWidth,
-    height: cardHeight,
-    label: 'STREAK',
-    value: formatStreak(stats.streak),
-    accent: '#ff9a4d',
-    fill: 'rgba(255, 154, 77, 0.18)'
-  })
-
-  drawStatCard(ctx, {
-    x: right,
-    y: cardTop + cardHeight + 20,
-    width: cardWidth,
-    height: cardHeight,
-    label: 'TOTAL XP',
-    value: `${stats.totalXp}`,
-    accent: '#ffe08f',
-    fill: 'rgba(255, 224, 143, 0.16)'
-  })
-
-  drawNoSkipLogo(ctx, width / 2, panelY + panelHeight - 104)
-}
-
-function drawStatCard(
-  ctx: CanvasRenderingContext2D,
-  opts: {
-    x: number
-    y: number
-    width: number
-    height: number
-    label: string
-    value: string
-    accent: string
-    fill: string
-  }
-): void {
-  drawRoundedRect(ctx, opts.x, opts.y, opts.width, opts.height, 24)
-  ctx.fillStyle = opts.fill
-  ctx.fill()
-  ctx.strokeStyle = opts.accent
-  ctx.lineWidth = 2
-  ctx.stroke()
-
-  ctx.fillStyle = opts.accent
-  ctx.font = '700 24px "Space Grotesk", "DM Sans", sans-serif'
-  ctx.textAlign = 'left'
-  ctx.fillText(opts.label, opts.x + 24, opts.y + 50)
-
-  ctx.fillStyle = '#f5fbff'
-  ctx.font = '800 44px "Space Grotesk", "DM Sans", sans-serif'
-  ctx.fillText(opts.value, opts.x + 24, opts.y + 118)
-}
-
-function drawNoSkipLogo(ctx: CanvasRenderingContext2D, centerX: number, baselineY: number): void {
-  ctx.save()
-  ctx.translate(centerX, baselineY)
-  ctx.textAlign = 'center'
-
-  drawRoundedRect(ctx, -190, -56, 380, 94, 24)
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.06)'
-  ctx.fill()
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)'
-  ctx.lineWidth = 2
-  ctx.stroke()
-
-  ctx.beginPath()
-  ctx.moveTo(-140, 2)
-  ctx.lineTo(-100, -20)
-  ctx.lineTo(-62, 2)
-  ctx.strokeStyle = '#0edec4'
-  ctx.lineWidth = 10
-  ctx.lineCap = 'round'
-  ctx.stroke()
-
-  ctx.fillStyle = '#f2f8ff'
-  ctx.font = '800 42px "Space Grotesk", "DM Sans", sans-serif'
-  ctx.fillText('NoSkip', 42, 14)
-  ctx.restore()
-}
-
-function drawRoundedRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number
-): void {
-  const r = Math.max(0, Math.min(radius, width / 2, height / 2))
-  ctx.beginPath()
-  ctx.moveTo(x + r, y)
-  ctx.lineTo(x + width - r, y)
-  ctx.quadraticCurveTo(x + width, y, x + width, y + r)
-  ctx.lineTo(x + width, y + height - r)
-  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height)
-  ctx.lineTo(x + r, y + height)
-  ctx.quadraticCurveTo(x, y + height, x, y + height - r)
-  ctx.lineTo(x, y + r)
-  ctx.quadraticCurveTo(x, y, x + r, y)
-  ctx.closePath()
-}
-
-function drawWrappedText(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  x: number,
-  y: number,
-  maxWidth: number,
-  lineHeight: number,
-  maxLines: number
-): number {
-  const words = text.trim().split(/\s+/).filter(Boolean)
-  if (!words.length) return y
-
-  let line = ''
-  let renderedLines = 0
-  let drawY = y
-
-  for (let idx = 0; idx < words.length; idx++) {
-    const word = words[idx]
-    const candidate = line ? `${line} ${word}` : word
-    const width = ctx.measureText(candidate).width
-    if (width <= maxWidth || !line) {
-      line = candidate
-      continue
-    }
-
-    ctx.fillText(line, x, drawY)
-    renderedLines += 1
-    drawY += lineHeight
-    line = word
-    if (renderedLines >= maxLines - 1) break
-  }
-
-  if (renderedLines < maxLines && line) {
-    let finalLine = line
-    if (ctx.measureText(finalLine).width > maxWidth) {
-      while (finalLine.length > 1 && ctx.measureText(`${finalLine}…`).width > maxWidth) {
-        finalLine = finalLine.slice(0, -1)
-      }
-      finalLine = `${finalLine}…`
-    }
-    ctx.fillText(finalLine, x, drawY)
-    renderedLines += 1
-  }
-
-  return y + renderedLines * lineHeight
-}
-
-function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(blob => {
-      if (!blob) {
-        reject(new Error('Failed to create PNG blob.'))
-        return
-      }
-      resolve(blob)
-    }, 'image/png')
-  })
-}
-
-function ensureAudio(): void {
-  if (!state.audioCtx) {
-    const AudioCtor =
-      window.AudioContext ||
-      (window as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-    if (!AudioCtor) return
-    state.audioCtx = new AudioCtor()
-  }
-  if (state.audioCtx && state.audioCtx.state === 'suspended') {
-    state.audioCtx.resume()
-  }
-}
-
-function pulsePing(): void {
-  // removed visual ping
-}
-
-function playTone(frequency: number, duration = 0.12, volume = METRONOME_VOLUME): void {
-  ensureAudio()
-  pulsePing()
-  if (!state.audioCtx) return
-  const ctx = state.audioCtx
-  const osc = ctx.createOscillator()
-  const gain = ctx.createGain()
-  osc.frequency.value = frequency
-  osc.type = 'sine'
-  gain.gain.setValueAtTime(volume, ctx.currentTime)
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration)
-  osc.connect(gain).connect(ctx.destination)
-  osc.start()
-  osc.stop(ctx.currentTime + duration)
-}
-
-function playCueTone(segment: ScheduleSegment): void {
-  const meta = phaseMeta[segment.phase]
-  if (!meta) {
-    playTone(620)
-    return
-  }
-  if (meta.tone > 0) {
-    playTone(meta.tone)
-  }
-}
-
-function handleCountdownBeep(): void {
-  const remainingSec = Math.ceil(state.remainingMs / 1000)
-  if (remainingSec <= 3 && remainingSec !== state.lastCountdownSecond) {
-    state.lastCountdownSecond = remainingSec
-    playTone(remainingSec === 1 ? 980 : 620, 0.08, METRONOME_VOLUME)
-  }
-}
-
-function ensureMusicPlayer(): HTMLAudioElement | null {
-  if (!MUSIC_TRACKS.length) return null
-  if (!musicPlayer) {
-    const audio = new Audio()
-    audio.preload = 'auto'
-    audio.volume = MUSIC_VOLUME
-    audio.addEventListener('ended', () => {
-      if (state.status === 'running') {
-        playRandomTrack()
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 720 },
+        height: { ideal: 1280 }
       }
     })
-    musicPlayer = audio
+
+    state.live.stream = stream
+    state.live.engine = new SquatSessionEngine(squatTraining.session.protocol)
+    state.live.startedAtMs = performance.now()
+    state.live.pausedDurationMs = 0
+    state.live.paused = false
+    state.live.pausedAtMs = null
+    state.live.snapshot = state.live.engine.getSnapshot()
+    state.live.completionHandled = false
+
+    els.cameraVideo.srcObject = stream
+    await els.cameraVideo.play()
+    syncCanvasToVideo()
+
+    state.live.pose = new Pose({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+    })
+    state.live.pose.setOptions({
+      modelComplexity: 1,
+      smoothLandmarks: true,
+      selfieMode: false,
+      enableSegmentation: false,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
+    })
+    state.live.pose.onResults((results) => {
+      void handlePoseResults(results)
+    })
+
+    renderLiveSnapshot(state.live.snapshot)
+    voiceCoach.speak({
+      key: 'welcome',
+      message: `Welcome, ${state.activeUser.name}. Today you will perform a squat training: 3 sets of 5 reps. Get into position.`,
+      interrupt: true,
+      minIntervalMs: 0
+    })
+
+    await startPoseLoop()
+  } catch (error) {
+    els.cameraError.hidden = false
+    els.cameraError.textContent =
+      error instanceof Error
+        ? error.message
+        : 'Camera access failed. Use a secure localhost session and allow camera permission.'
   }
-  return musicPlayer
 }
 
-function pickRandomTrack(): string | null {
-  if (!MUSIC_TRACKS.length) return null
-  let idx = Math.floor(Math.random() * MUSIC_TRACKS.length)
-  if (MUSIC_TRACKS.length > 1 && idx === lastMusicIndex) {
-    idx = (idx + 1) % MUSIC_TRACKS.length
+async function quitLiveSession(nextScreen: ScreenKey): Promise<void> {
+  await stopLiveResources()
+  state.latestSession = null
+  setActiveScreen(nextScreen)
+  renderApp()
+}
+
+function handleAuthSubmit(event: SubmitEvent): void {
+  event.preventDefault()
+
+  const email = els.authEmailInput.value.trim()
+  const password = els.authPasswordInput.value
+
+  if (email === '' || password.trim() === '') {
+    showAuthError('Email and password are required.')
+    return
   }
-  lastMusicIndex = idx
-  return MUSIC_TRACKS[idx]
-}
 
-function playRandomTrack(): void {
-  const audio = ensureMusicPlayer()
-  const track = pickRandomTrack()
-  if (!audio || !track) return
-  audio.src = track
-  audio.currentTime = 0
-  audio.muted = state.musicMuted
-  if (!state.musicMuted) {
-    void audio.play().catch(() => undefined)
+  if (state.authMode === 'signup') {
+    const name = els.authNameInput.value.trim()
+
+    if (name === '') {
+      showAuthError('Your name is required.')
+      return
+    }
+
+    const result = registerUser(name, email, password)
+    if (!result.ok) {
+      showAuthError(result.message ?? 'Could not create the account.')
+      return
+    }
+  } else {
+    const result = loginUser(email, password)
+    if (!result.ok) {
+      showAuthError(result.message ?? 'Could not log in.')
+      return
+    }
   }
+
+  refreshUserData()
+  els.authForm.reset()
+  setActiveScreen('home')
+  renderApp()
 }
 
-function startMusic(): void {
-  const audio = ensureMusicPlayer()
-  if (!audio) return
-  playRandomTrack()
-}
+function bootstrap(): void {
+  refreshUserData()
+  renderApp()
 
-function pauseMusic(reset = false): void {
-  if (!musicPlayer) return
-  musicPlayer.pause()
-  if (reset) {
-    musicPlayer.currentTime = 0
+  if (state.activeUser) {
+    setActiveScreen('home')
+    renderApp()
   }
+
+  els.authSwitchBtn.addEventListener('click', () => {
+    state.authMode = state.authMode === 'signup' ? 'login' : 'signup'
+    renderAuth()
+  })
+
+  els.authForm.addEventListener('submit', (event) => handleAuthSubmit(event as SubmitEvent))
+
+  els.homeProfileBtn.addEventListener('click', () => {
+    setActiveScreen('profile')
+    renderApp()
+  })
+
+  els.homeNavHome.addEventListener('click', () => {
+    setActiveScreen('home')
+    renderApp()
+  })
+
+  els.homeNavProfile.addEventListener('click', () => {
+    setActiveScreen('profile')
+    renderApp()
+  })
+
+  els.profileNavHome.addEventListener('click', () => {
+    setActiveScreen('home')
+    renderApp()
+  })
+
+  els.profileNavProfile.addEventListener('click', () => {
+    setActiveScreen('profile')
+    renderApp()
+  })
+
+  els.profileHomeBtn.addEventListener('click', () => {
+    setActiveScreen('home')
+    renderApp()
+  })
+
+  els.coachCard.addEventListener('click', () => {
+    setActiveScreen('details')
+    renderApp()
+  })
+
+  els.detailsBackBtn.addEventListener('click', () => {
+    setActiveScreen('home')
+    renderApp()
+  })
+
+  els.detailsStartBtn.addEventListener('click', () => {
+    void startLiveSession()
+  })
+
+  els.liveBackBtn.addEventListener('click', () => {
+    if (window.confirm('Leave the live session? Current progress will be discarded.')) {
+      void quitLiveSession('details')
+    }
+  })
+
+  els.quitBtn.addEventListener('click', () => {
+    if (window.confirm('Quit the current session? Current progress will be discarded.')) {
+      void quitLiveSession('details')
+    }
+  })
+
+  els.pauseToggleBtn.addEventListener('click', () => {
+    if (!state.live.engine) return
+
+    if (state.live.paused) {
+      const resumedAt = performance.now()
+      state.live.engine.resume(resumedAt)
+      if (state.live.pausedAtMs !== null) {
+        state.live.pausedDurationMs += resumedAt - state.live.pausedAtMs
+      }
+      state.live.pausedAtMs = null
+      state.live.paused = false
+    } else {
+      state.live.paused = true
+      state.live.pausedAtMs = performance.now()
+      state.live.engine.pause(state.live.pausedAtMs)
+      voiceCoach.stop()
+    }
+
+    if (state.live.snapshot) renderLiveSnapshot(state.live.snapshot)
+  })
+
+  els.voiceToggleBtn.addEventListener('click', () => {
+    state.voiceMuted = !state.voiceMuted
+    voiceCoach.setMuted(state.voiceMuted)
+    els.voiceToggleBtn.textContent = state.voiceMuted ? 'Voice off' : 'Voice on'
+  })
+
+  els.resultsHomeBtn.addEventListener('click', () => {
+    state.latestSession = null
+    setActiveScreen('home')
+    renderApp()
+  })
+
+  els.resultsProfileBtn.addEventListener('click', () => {
+    state.latestSession = null
+    setActiveScreen('profile')
+    renderApp()
+  })
+
+  els.logoutBtn.addEventListener('click', () => {
+    voiceCoach.stop()
+    logoutUser()
+    refreshUserData()
+    state.latestSession = null
+    state.authMode = 'login'
+    setActiveScreen('auth')
+    renderApp()
+  })
+
+  window.addEventListener('resize', syncCanvasToVideo)
 }
 
-function resumeMusic(): void {
-  if (!musicPlayer || state.musicMuted) return
-  void musicPlayer.play().catch(() => undefined)
-}
-
-function updateMusicToggle(): void {
-  els.musicToggle.classList.toggle('is-muted', state.musicMuted)
-  els.musicToggle.setAttribute('aria-pressed', String(state.musicMuted))
-}
-
-function setMusicMuted(muted: boolean): void {
-  state.musicMuted = muted
-  if (musicPlayer) {
-    musicPlayer.muted = muted
-  }
-  if (!muted && state.status === 'running') {
-    resumeMusic()
-  }
-  updateMusicToggle()
-}
+bootstrap()

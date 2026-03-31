@@ -1,240 +1,384 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Metrônomo de Calistenia</title>
+  <title>Noskip</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="bg">
-    <div class="orb orb-a"></div>
-    <div class="orb orb-b"></div>
+  <div class="bg-layer" aria-hidden="true">
+    <div class="glow glow-a"></div>
+    <div class="glow glow-b"></div>
+    <div class="glow glow-c"></div>
   </div>
 
-  <div class="app">
+  <div class="app-shell">
     <main class="screen-stack">
-      <section class="screen" data-screen="select">
-        <div class="panel">
-          <div class="heading-block">
-            <h2 class="select-title">Selecionar treino</h2>
+      <section class="screen auth-screen" data-screen="auth">
+        <div class="card hero-card">
+          <img src="assets/logo.png" alt="Noskip logo" class="hero-logo">
+          <p class="eyebrow">AI squat coach</p>
+          <h1>Train with a mobile coach that watches every rep.</h1>
+          <p class="hero-copy">
+            Side-view pose detection, real-time form cues, voice guidance, and a fixed 3 x 5 squat protocol built for clean onboarding and fast testing.
+          </p>
+          <div class="hero-badges">
+            <span class="pill">Side / 3/4 view</span>
+            <span class="pill">Voice coaching</span>
+            <span class="pill">15 rep session</span>
           </div>
-          <div class="training-list" id="training-list"></div>
         </div>
-        <nav class="bottom-nav" aria-label="Navegação principal">
-          <button class="ghost large bottom-nav-btn is-active" id="select-trainings-btn">Treinos</button>
-          <button class="ghost large bottom-nav-btn" id="select-profile-btn">Perfil</button>
+
+        <form class="card auth-card" id="auth-form">
+          <div class="section-head">
+            <p class="eyebrow" id="auth-mode-label">Create account</p>
+            <h2 id="auth-title">Start your Noskip profile</h2>
+            <p class="section-copy" id="auth-helper">
+              This MVP stores your account locally on this device and saves your squat history for quick iteration.
+            </p>
+          </div>
+
+          <label class="field" id="auth-name-row">
+            <span>Name</span>
+            <input id="auth-name-input" name="name" type="text" autocomplete="name" placeholder="Enzo">
+          </label>
+
+          <label class="field">
+            <span>Email</span>
+            <input id="auth-email-input" name="email" type="email" autocomplete="email" placeholder="enzo@example.com" required>
+          </label>
+
+          <label class="field">
+            <span>Password</span>
+            <input id="auth-password-input" name="password" type="password" autocomplete="current-password" minlength="6" placeholder="At least 6 characters" required>
+          </label>
+
+          <p class="form-error" id="auth-error" hidden></p>
+
+          <button class="primary-button" id="auth-submit-btn" type="submit">Create account</button>
+
+          <p class="switch-copy">
+            <span id="auth-switch-copy">Already have an account?</span>
+            <button class="inline-button" id="auth-switch-btn" type="button">Log in</button>
+          </p>
+        </form>
+      </section>
+
+      <section class="screen" data-screen="home" hidden>
+        <header class="topbar">
+          <div class="brand-lockup">
+            <img src="assets/logo.png" alt="Noskip logo" class="brand-logo">
+          </div>
+          <button class="chip-button" id="home-profile-btn" type="button">Profile</button>
+        </header>
+
+        <div class="card splash-card">
+          <p class="eyebrow">Welcome back</p>
+          <h1 id="home-greeting">Ready for another clean set?</h1>
+          <p class="section-copy" id="home-session-copy"></p>
+        </div>
+
+        <button class="coach-card" id="coach-card" type="button">
+          <img src="assets/coach.png" alt="Coach portrait" class="coach-card-image">
+          <div class="coach-card-body">
+            <div class="coach-card-header">
+              <div>
+                <p class="eyebrow">Choose your coach</p>
+                <h2 id="home-coach-name">Marco</h2>
+              </div>
+              <span class="coach-badge">Live now</span>
+            </div>
+            <p class="coach-role" id="home-coach-role">Noskip squat coach</p>
+            <p class="coach-copy" id="home-coach-bio"></p>
+            <div class="coach-card-footer">
+              <span class="stat-pill"><strong id="home-total-sessions">0</strong> sessions saved</span>
+              <span class="stat-pill">3 x 5 protocol</span>
+            </div>
+          </div>
+        </button>
+
+        <div class="card protocol-preview">
+          <div class="protocol-row">
+            <span>Position gate</span>
+            <strong>Side or slight 3/4 view</strong>
+          </div>
+          <div class="protocol-row">
+            <span>Session structure</span>
+            <strong>3 sets x 5 reps</strong>
+          </div>
+          <div class="protocol-row">
+            <span>Rest timing</span>
+            <strong>15 seconds between sets</strong>
+          </div>
+        </div>
+
+        <nav class="bottom-nav" aria-label="Primary navigation">
+          <button class="bottom-nav-button is-active" id="home-nav-home" type="button">Coach</button>
+          <button class="bottom-nav-button" id="home-nav-profile" type="button">Profile</button>
         </nav>
       </section>
 
       <section class="screen" data-screen="details" hidden>
-        <div class="panel">
-          <div class="panel-header">
-            <button class="icon-button" id="detail-back-btn" aria-label="Voltar para treinos">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </button>
-            <div class="detail-heading">
-              <h2 id="detail-training-name">Treino</h2>
-              <p class="muted small" id="detail-training-desc"></p>
-            </div>
-            <div class="header-spacer" aria-hidden="true"></div>
+        <header class="topbar">
+          <button class="chip-button" id="details-back-btn" type="button">Back</button>
+          <div class="brand-lockup compact">
+            <img src="assets/logo.png" alt="Noskip logo" class="brand-logo">
           </div>
-          <div class="quick-stats centered">
-            <div>
-              <p class="label">Duração</p>
-              <p class="value" id="total-time">--:--</p>
-            </div>
+          <div class="topbar-spacer" aria-hidden="true"></div>
+        </header>
+
+        <div class="card detail-hero">
+          <img src="assets/coach.png" alt="Coach portrait" class="detail-coach-image">
+          <div class="detail-hero-copy">
+            <p class="eyebrow">Coach selected</p>
+            <h1 id="details-coach-name">Marco</h1>
+            <p class="coach-role" id="details-coach-role">Noskip squat coach</p>
+            <p class="section-copy" id="details-subtitle"></p>
           </div>
-          <div class="row between breakdown-header">
-            <div class="heading-block">
-              <h3>Exercícios da rotina</h3>
-            </div>
-            <p class="muted small">Toque em um exercício para ver dicas.</p>
-          </div>
-          <div class="exercise-grid scroll-list" id="detail-exercise-list"></div>
         </div>
-        <div class="footer-actions center">
-          <button class="primary" id="detail-start-btn">Iniciar treino</button>
+
+        <div class="card detail-card">
+          <div class="section-head">
+            <p class="eyebrow">Session format</p>
+            <h2 id="details-title">Squat posture session</h2>
+          </div>
+
+          <div class="metric-grid">
+            <div class="metric-card">
+              <span>Sets</span>
+              <strong id="details-sets">3</strong>
+            </div>
+            <div class="metric-card">
+              <span>Reps</span>
+              <strong id="details-reps">5</strong>
+            </div>
+            <div class="metric-card">
+              <span>Rest</span>
+              <strong id="details-rest">15s</strong>
+            </div>
+            <div class="metric-card">
+              <span>Tracking</span>
+              <strong>MediaPipe Pose</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="card detail-card">
+          <div class="section-head">
+            <p class="eyebrow">Before the first rep</p>
+            <h2>Camera and setup rules</h2>
+          </div>
+          <ul class="bullet-list" id="details-focus-list"></ul>
+        </div>
+
+        <div class="card detail-card">
+          <div class="section-head">
+            <p class="eyebrow">Live coaching</p>
+            <h2>What the coach will watch</h2>
+          </div>
+          <ul class="bullet-list" id="details-tips"></ul>
+        </div>
+
+        <div class="action-bar">
+          <button class="primary-button" id="details-start-btn" type="button">Open camera and start</button>
         </div>
       </section>
 
-      <section class="screen" data-screen="exercise" hidden>
-        <div class="panel exercise-panel">
-          <div class="panel-header simple">
-            <button class="icon-button" id="exercise-back-btn" aria-label="Voltar para treino selecionado">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </button>
+      <section class="screen" data-screen="live" hidden>
+        <header class="live-topbar">
+          <button class="chip-button" id="live-back-btn" type="button">Back</button>
+          <div>
+            <p class="eyebrow">Live session</p>
+            <h1 class="live-title">Squat posture coach</h1>
           </div>
-          <p class="eyebrow center-text">Detalhes do exercício</p>
-          <h2 class="center-text" id="exercise-detail-title">Exercício</h2>
-          <p class="muted small center-text" id="exercise-detail-meta"></p>
-          <div class="detail-block">
-            <h3>Vídeo</h3>
-            <div class="video-shell">
-              <video id="exercise-video" class="video-player" controls playsinline preload="metadata"></video>
-              <p class="muted" id="exercise-video-placeholder">Vídeo em breve.</p>
+          <button class="chip-button" id="voice-toggle-btn" type="button">Voice on</button>
+        </header>
+
+        <div class="card camera-card">
+          <div class="camera-stage">
+            <video id="camera-video" class="camera-video" autoplay muted playsinline></video>
+            <canvas id="camera-canvas" class="camera-canvas"></canvas>
+            <div class="camera-gradient"></div>
+            <div class="camera-overlay-copy">
+              <span class="status-pill is-warn" id="orientation-chip">Checking position</span>
+              <h2 id="live-cue">Get into position.</h2>
+              <p id="live-feedback">Turn sideways to the camera and keep your full body in frame.</p>
             </div>
           </div>
-          <div class="detail-block">
-            <h3>Dicas</h3>
-            <p class="muted" id="exercise-detail-tips"></p>
+          <p class="camera-error" id="camera-error" hidden></p>
+        </div>
+
+        <div class="metric-grid live-grid">
+          <div class="metric-card">
+            <span>Set</span>
+            <strong id="live-set-value">1 / 3</strong>
           </div>
+          <div class="metric-card">
+            <span>Rep</span>
+            <strong id="live-rep-value">0 / 5</strong>
+          </div>
+          <div class="metric-card">
+            <span>Valid</span>
+            <strong id="live-valid-value">0 / 0</strong>
+          </div>
+          <div class="metric-card">
+            <span>Phase</span>
+            <strong id="live-phase-value">Setup</strong>
+          </div>
+        </div>
+
+        <div class="card diagnostics-card">
+          <div class="section-head tight">
+            <p class="eyebrow">Live metrics</p>
+            <h2>Tracked cues</h2>
+          </div>
+          <div class="diagnostic-grid">
+            <div class="diagnostic-row">
+              <span>Knee angle</span>
+              <strong id="live-knee-value">--</strong>
+            </div>
+            <div class="diagnostic-row">
+              <span>Hip angle</span>
+              <strong id="live-hip-value">--</strong>
+            </div>
+            <div class="diagnostic-row">
+              <span>Torso lean</span>
+              <strong id="live-torso-value">--</strong>
+            </div>
+            <div class="diagnostic-row">
+              <span>Heel lift</span>
+              <strong id="live-heel-value">--</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="card checklist-card">
+          <div class="section-head tight">
+            <p class="eyebrow">Coach checklist</p>
+            <h2>Readiness and form</h2>
+          </div>
+          <div class="check-grid">
+            <div class="check-item" id="check-orientation">
+              <span>Orientation</span>
+              <strong>Waiting</strong>
+            </div>
+            <div class="check-item" id="check-stance">
+              <span>Start posture</span>
+              <strong>Waiting</strong>
+            </div>
+            <div class="check-item" id="check-depth">
+              <span>Depth</span>
+              <strong>Waiting</strong>
+            </div>
+            <div class="check-item" id="check-heels">
+              <span>Heel control</span>
+              <strong>Waiting</strong>
+            </div>
+          </div>
+          <span class="rest-pill" id="rest-pill" hidden>Rest 15s</span>
+        </div>
+
+        <div class="action-bar live-actions">
+          <button class="secondary-button" id="pause-toggle-btn" type="button">Pause</button>
+          <button class="ghost-button" id="quit-btn" type="button">Quit session</button>
         </div>
       </section>
 
-      <section class="screen" data-screen="metronome" hidden>
-        <section class="panel player" id="player-panel">
-          <div class="player-header">
-            <div class="player-title-row">
-              <button class="icon-button" id="metronome-back-btn" aria-label="Voltar para treino selecionado">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </button>
-              <h2 class="player-title" id="player-training-name">Treino</h2>
-            </div>
-            <div class="status-indicator" id="status-chip" aria-label="Status do treino">
-              <svg class="status-icon status-play" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M8 5v14l11-7z" fill="currentColor" />
-              </svg>
-              <svg class="status-icon status-pause" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M6 5h4v14H6zm8 0h4v14h-4z" fill="currentColor" />
-              </svg>
-            </div>
-          </div>
-          <div class="player-placeholder" id="player-placeholder">
-            <div>
-              <p class="eyebrow">Pronto</p>
-              <h3>Toque em iniciar para começar</h3>
-              <p class="muted small">Siga o tempo e os sinais sonoros.</p>
-            </div>
-          </div>
-          <div class="player-main" id="player-main">
-            <div class="exercise-block">
-              <h3 id="current-title">Selecione um treino e toque em iniciar</h3>
-              <div class="exercise-meta">
-                <span class="muted" id="current-detail">Todas as instruções aparecerão aqui.</span>
-              </div>
-            </div>
-            <div class="detail-block video-block">
-              <h3>Vídeo</h3>
-              <div class="video-shell">
-                <video id="player-video" class="video-player" controls playsinline preload="metadata"></video>
-                <p class="muted" id="player-video-placeholder">Vídeo em breve.</p>
-              </div>
-            </div>
-            <div class="time-stack">
-              <div class="time-header">
-                <div class="phase-pill" id="phase-pill">Pronto</div>
-                <div class="time" id="current-remaining">--</div>
-              </div>
-              <div class="segment-progress" id="segment-progress">
-                <div id="segment-progress-bar"></div>
-              </div>
-              <div class="phase-blocks" id="phase-blocks"></div>
-            </div>
-          </div>
-          <div class="progress-row" aria-label="Progresso do treino">
-            <div class="progress">
-              <div id="progress-bar"></div>
-            </div>
-            <div class="session-remaining" id="session-remaining">--:--</div>
-          </div>
-        </section>
-        <div class="footer-actions metronome-actions">
-          <button class="primary" id="start-btn">Iniciar</button>
-          <button class="ghost large" id="pause-btn" disabled>Pausar</button>
-          <button class="ghost icon-button" id="music-toggle-btn" aria-label="Alternar música" aria-pressed="false">
-            <svg class="music-icon music-on" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M9 17a2 2 0 1 1-1-1.73V6l9-2v8.5a2 2 0 1 1-1-1.73V5.7L10 7v8a2 2 0 0 1-1 1.73z" fill="currentColor" />
-            </svg>
-            <svg class="music-icon music-off" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 4l16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              <path d="M9 17a2 2 0 1 1-1-1.73V6l6-1.33" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-              <path d="M16 9.3V5.7l-2.7.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </button>
-        </div>
-      </section>
-
-      <section class="screen" data-screen="complete" hidden>
-        <div class="panel complete-panel">
-          <h2 class="complete-title">Treino concluído!</h2>
-          <p class="muted complete-subtitle">
-            Você concluiu o treino <span id="complete-training-name"></span>. Continue assim!
+      <section class="screen" data-screen="results" hidden>
+        <div class="card results-card">
+          <p class="eyebrow">Session complete</p>
+          <h1>Great job, <span id="results-name">athlete</span>.</h1>
+          <p class="section-copy">
+            Your last squat session is already saved locally. Use the scores below to compare depth consistency and posture quality over time.
           </p>
-          <div class="quick-stats complete-stats">
-            <div class="stat-card neon-blue">
-              <p class="label">XP ganho</p>
-              <p class="value" id="complete-xp-earned">0 XP</p>
+
+          <div class="metric-grid">
+            <div class="metric-card">
+              <span>Total reps</span>
+              <strong id="results-total-reps">15</strong>
             </div>
-            <div class="stat-card complete-white">
-              <p class="label">Tempo treino</p>
-              <p class="value" id="complete-training-time">00:00</p>
+            <div class="metric-card">
+              <span>Valid reps</span>
+              <strong id="results-valid-reps">12</strong>
             </div>
-            <div class="stat-card neon-orange">
-              <p class="label">Streak</p>
-              <p class="value" id="complete-streak">0 dias</p>
+            <div class="metric-card">
+              <span>Depth score</span>
+              <strong id="results-depth-score">92%</strong>
             </div>
-            <div class="stat-card neon-gold">
-              <p class="label">Total XP</p>
-              <p class="value" id="complete-total-xp">0 XP</p>
+            <div class="metric-card">
+              <span>Posture score</span>
+              <strong id="results-posture-score">88%</strong>
             </div>
           </div>
-          <div class="share-actions">
-            <button class="primary wide" id="complete-share-btn">Compartilhar resultado</button>
-            <div class="share-targets" id="complete-share-targets" hidden>
-              <button class="ghost large" id="complete-share-instagram-btn">Instagram</button>
-              <button class="ghost large" id="complete-share-x-btn">X</button>
-            </div>
+
+          <div class="results-notes">
+            <p class="eyebrow">Coach notes</p>
+            <div id="results-notes"></div>
           </div>
         </div>
-        <div class="footer-actions">
-          <button class="ghost wide" id="complete-to-selection">Voltar para treinos</button>
-          <button class="primary wide" id="complete-to-history">Perfil</button>
+
+        <div class="action-bar">
+          <button class="secondary-button" id="results-home-btn" type="button">Back to coach</button>
+          <button class="primary-button" id="results-profile-btn" type="button">Open profile</button>
         </div>
       </section>
 
-      <section class="screen" data-screen="history" hidden>
-        <div class="panel history-panel">
-          <div class="history-header">
-            <h2>Perfil</h2>
+      <section class="screen" data-screen="profile" hidden>
+        <header class="topbar">
+          <button class="chip-button" id="profile-home-btn" type="button">Coach</button>
+          <div class="brand-lockup compact">
+            <img src="assets/logo.png" alt="Noskip logo" class="brand-logo">
           </div>
-          <div class="stat-card neon accent-center">
-            <p class="label">XP total</p>
-            <p class="value" id="history-total-xp">0 XP</p>
-          </div>
-          <div class="stat-card neon-orange accent-center">
-            <p class="label">Streak</p>
-            <p class="value" id="history-streak">0 dias</p>
-          </div>
-          <h3 class="history-subtitle">Historico</h3>
-          <div class="history-list" id="history-list"></div>
+          <button class="chip-button" id="logout-btn" type="button">Log out</button>
+        </header>
+
+        <div class="card profile-card">
+          <p class="eyebrow">Athlete profile</p>
+          <h1 id="profile-name">Enzo</h1>
+          <p class="section-copy" id="profile-email">enzo@example.com</p>
         </div>
-        <nav class="bottom-nav" aria-label="Navegação principal">
-          <button class="ghost large bottom-nav-btn" id="history-trainings-btn">Treinos</button>
-          <button class="ghost large bottom-nav-btn is-active" id="history-profile-btn">Perfil</button>
+
+        <div class="metric-grid">
+          <div class="metric-card">
+            <span>Sessions</span>
+            <strong id="profile-total-sessions">0</strong>
+          </div>
+          <div class="metric-card">
+            <span>Valid reps</span>
+            <strong id="profile-total-valid-reps">0</strong>
+          </div>
+          <div class="metric-card">
+            <span>Avg depth</span>
+            <strong id="profile-depth-score">0%</strong>
+          </div>
+          <div class="metric-card">
+            <span>Avg posture</span>
+            <strong id="profile-posture-score">0%</strong>
+          </div>
+        </div>
+
+        <div class="card history-card">
+          <div class="section-head tight">
+            <p class="eyebrow">Session history</p>
+            <h2>Recent workouts</h2>
+          </div>
+          <div id="history-list"></div>
+        </div>
+
+        <nav class="bottom-nav" aria-label="Primary navigation">
+          <button class="bottom-nav-button" id="profile-nav-home" type="button">Coach</button>
+          <button class="bottom-nav-button is-active" id="profile-nav-profile" type="button">Profile</button>
         </nav>
       </section>
     </main>
   </div>
 
-  <div class="confirm-overlay" id="confirm-overlay" hidden>
-    <div class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirm-message">
-      <p class="confirm-message" id="confirm-message">
-        Tem certeza que vc quer sair do treino? Seu progresso sera perdido.
-      </p>
-      <div class="confirm-actions">
-        <button class="ghost large" id="confirm-no-btn">Nao</button>
-        <button class="primary large" id="confirm-yes-btn">Sim</button>
-      </div>
-    </div>
-  </div>
-
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
   <script type="module" src="dist/app.js"></script>
 </body>
 </html>
