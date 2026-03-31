@@ -1,0 +1,11 @@
+*
+!.dockerignore
+!Dockerfile
+!fly.toml
+!index.html
+!styles.css
+!nginx.conf
+!assets/
+!assets/**
+!dist/
+!dist/**
