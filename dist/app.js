@@ -411,6 +411,26 @@ function drawPose(landmarks, trackedSide) {
         context.fill();
     }
 }
+async function optimizeFrontCameraTrack(track) {
+    if (track.kind !== 'video' || typeof track.getCapabilities !== 'function')
+        return;
+    const capabilities = track.getCapabilities();
+    const constraints = {};
+    if (Array.isArray(capabilities.resizeMode) && capabilities.resizeMode.includes('none')) {
+        constraints.resizeMode = 'none';
+    }
+    if (typeof capabilities.zoom?.min === 'number') {
+        constraints.zoom = capabilities.zoom.min;
+    }
+    if (Object.keys(constraints).length === 0)
+        return;
+    try {
+        await track.applyConstraints(constraints);
+    }
+    catch {
+        // Some mobile browsers expose partial camera controls but reject individual updates.
+    }
+}
 async function stopLiveResources() {
     if (state.live.rafId !== null) {
         cancelAnimationFrame(state.live.rafId);
@@ -535,14 +555,21 @@ async function startLiveSession() {
         return;
     }
     try {
+        const videoConstraints = {
+            facingMode: { ideal: 'user' },
+            width: { ideal: 960 },
+            height: { ideal: 1280 },
+            aspectRatio: { ideal: 3 / 4 },
+            resizeMode: { ideal: 'none' }
+        };
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: false,
-            video: {
-                facingMode: { ideal: 'user' },
-                width: { ideal: 720 },
-                height: { ideal: 1280 }
-            }
+            video: videoConstraints
         });
+        const [videoTrack] = stream.getVideoTracks();
+        if (videoTrack) {
+            await optimizeFrontCameraTrack(videoTrack);
+        }
         state.live.stream = stream;
         state.live.engine = new SquatSessionEngine(squatTraining.session.protocol);
         state.live.startedAtMs = performance.now();

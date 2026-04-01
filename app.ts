@@ -31,6 +31,16 @@ type LiveState = {
   completionHandled: boolean
 }
 
+type CameraTrackCapabilities = MediaTrackCapabilities & {
+  resizeMode?: string[]
+  zoom?: MediaSettingsRange
+}
+
+type CameraTrackConstraints = MediaTrackConstraints & {
+  resizeMode?: ConstrainDOMString
+  zoom?: ConstrainDouble
+}
+
 const voiceCoach = new VoiceCoach()
 
 const state: {
@@ -516,6 +526,29 @@ function drawPose(landmarks: PoseLandmark[] | undefined, trackedSide: 'left' | '
   }
 }
 
+async function optimizeFrontCameraTrack(track: MediaStreamTrack): Promise<void> {
+  if (track.kind !== 'video' || typeof track.getCapabilities !== 'function') return
+
+  const capabilities = track.getCapabilities() as CameraTrackCapabilities
+  const constraints: CameraTrackConstraints = {}
+
+  if (Array.isArray(capabilities.resizeMode) && capabilities.resizeMode.includes('none')) {
+    constraints.resizeMode = 'none'
+  }
+
+  if (typeof capabilities.zoom?.min === 'number') {
+    constraints.zoom = capabilities.zoom.min
+  }
+
+  if (Object.keys(constraints).length === 0) return
+
+  try {
+    await track.applyConstraints(constraints)
+  } catch {
+    // Some mobile browsers expose partial camera controls but reject individual updates.
+  }
+}
+
 async function stopLiveResources(): Promise<void> {
   if (state.live.rafId !== null) {
     cancelAnimationFrame(state.live.rafId)
@@ -666,14 +699,23 @@ async function startLiveSession(): Promise<void> {
   }
 
   try {
+    const videoConstraints: CameraTrackConstraints = {
+      facingMode: { ideal: 'user' },
+      width: { ideal: 960 },
+      height: { ideal: 1280 },
+      aspectRatio: { ideal: 3 / 4 },
+      resizeMode: { ideal: 'none' }
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: {
-        facingMode: { ideal: 'user' },
-        width: { ideal: 720 },
-        height: { ideal: 1280 }
-      }
+      video: videoConstraints
     })
+
+    const [videoTrack] = stream.getVideoTracks()
+    if (videoTrack) {
+      await optimizeFrontCameraTrack(videoTrack)
+    }
 
     state.live.stream = stream
     state.live.engine = new SquatSessionEngine(squatTraining.session.protocol)
