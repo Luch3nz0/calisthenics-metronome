@@ -7,6 +7,7 @@ type SpeakOptions = {
 
 export class VoiceCoach {
   private readonly lastSpokenAt = new Map<string, number>()
+  private lastAnySpokenAt = -Infinity
   private muted = false
 
   setMuted(nextMuted: boolean): void {
@@ -18,13 +19,15 @@ export class VoiceCoach {
     return this.muted
   }
 
-  speak({ key, message, minIntervalMs = 1600, interrupt = false }: SpeakOptions): boolean {
+  speak({ key, message, minIntervalMs = 2400, interrupt = false }: SpeakOptions): boolean {
     if (this.muted || !('speechSynthesis' in window) || message.trim() === '') return false
 
     const now = performance.now()
     const previous = this.lastSpokenAt.get(key) ?? -Infinity
 
     if (now - previous < minIntervalMs) return false
+    if (!interrupt && now - this.lastAnySpokenAt < 2400) return false
+    if (!interrupt && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) return false
 
     if (interrupt) window.speechSynthesis.cancel()
 
@@ -35,6 +38,7 @@ export class VoiceCoach {
 
     window.speechSynthesis.speak(utterance)
     this.lastSpokenAt.set(key, now)
+    this.lastAnySpokenAt = now
     return true
   }
 

@@ -1,5 +1,6 @@
 export class VoiceCoach {
     lastSpokenAt = new Map();
+    lastAnySpokenAt = -Infinity;
     muted = false;
     setMuted(nextMuted) {
         this.muted = nextMuted;
@@ -9,12 +10,16 @@ export class VoiceCoach {
     get isMuted() {
         return this.muted;
     }
-    speak({ key, message, minIntervalMs = 1600, interrupt = false }) {
+    speak({ key, message, minIntervalMs = 2400, interrupt = false }) {
         if (this.muted || !('speechSynthesis' in window) || message.trim() === '')
             return false;
         const now = performance.now();
         const previous = this.lastSpokenAt.get(key) ?? -Infinity;
         if (now - previous < minIntervalMs)
+            return false;
+        if (!interrupt && now - this.lastAnySpokenAt < 2400)
+            return false;
+        if (!interrupt && (window.speechSynthesis.speaking || window.speechSynthesis.pending))
             return false;
         if (interrupt)
             window.speechSynthesis.cancel();
@@ -24,6 +29,7 @@ export class VoiceCoach {
         utterance.pitch = 1;
         window.speechSynthesis.speak(utterance);
         this.lastSpokenAt.set(key, now);
+        this.lastAnySpokenAt = now;
         return true;
     }
     stop() {

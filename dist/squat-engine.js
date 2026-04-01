@@ -117,6 +117,7 @@ export class SquatSessionEngine {
     pausedAt = null;
     restGetReadyAnnounced = false;
     lastVoiceAt = new Map();
+    lastAnyVoiceAt = -Infinity;
     constructor(protocol) {
         this.protocol = protocol;
     }
@@ -242,9 +243,11 @@ export class SquatSessionEngine {
     createRepTracker() {
         return {
             depthReached: false,
+            heelErrorFrames: 0,
             leanErrorFrames: 0,
             lowestKneeAngle: 180,
             maxTorsoLean: 0,
+            maxHeelLift: 0,
             feedback: new Set()
         };
     }
@@ -268,7 +271,7 @@ export class SquatSessionEngine {
         return frame.metrics.kneeAngle <= descendThreshold;
     }
     isTopPosition(frame) {
-        return frame.metrics.kneeAngle >= 152 && frame.metrics.torsoLean <= 52;
+        return frame.metrics.kneeAngle >= 150 && frame.metrics.torsoLean <= 60;
     }
     isMovingUp(frame) {
         if (this.lastMetrics === null)
@@ -278,14 +281,22 @@ export class SquatSessionEngine {
         return kneeOpening || hipRising;
     }
     trackRepFrame(frame, timestampMs, events) {
-        const excessiveLean = frame.metrics.torsoLean > 52;
+        const heelLiftThreshold = frame.bodyHeight * 0.03;
+        const excessiveLean = frame.metrics.torsoLean > 60;
+        const heelLifted = frame.metrics.effectiveHeelLift > heelLiftThreshold;
         this.currentRep.depthReached ||= frame.metrics.reachedDepth || frame.metrics.kneeAngle <= 110;
         this.currentRep.lowestKneeAngle = Math.min(this.currentRep.lowestKneeAngle, frame.metrics.kneeAngle);
         this.currentRep.maxTorsoLean = Math.max(this.currentRep.maxTorsoLean, frame.metrics.torsoLean);
+        this.currentRep.maxHeelLift = Math.max(this.currentRep.maxHeelLift, frame.metrics.effectiveHeelLift);
         if (excessiveLean) {
             this.currentRep.leanErrorFrames += 1;
-            this.currentRep.feedback.add('Keep your chest more upright.');
-            this.maybeSpeak(events, 'keep-chest-upright', 'Keep your chest more upright.', timestampMs, 1800);
+            this.currentRep.feedback.add('Lift your chest a little more.');
+            this.maybeSpeak(events, 'lift-chest', 'Lift your chest a little more.', timestampMs, 4200);
+        }
+        if (heelLifted) {
+            this.currentRep.heelErrorFrames += 1;
+            this.currentRep.feedback.add('Keep your heels on the floor.');
+            this.maybeSpeak(events, 'keep-heels-down', 'Keep your heels on the floor.', timestampMs, 4200);
         }
         if (this.phase === 'DESCENDING') {
             if (frame.metrics.kneeAngle <= 110 || this.currentRep.depthReached) {
@@ -307,7 +318,7 @@ export class SquatSessionEngine {
     completeRep(frame, timestampMs, events) {
         const repDurationMs = Math.max(0, timestampMs - (this.repStartedAt ?? timestampMs));
         const depthValid = this.currentRep.depthReached;
-        const postureValid = this.currentRep.leanErrorFrames <= 4;
+        const postureValid = this.currentRep.leanErrorFrames <= 6 && this.currentRep.heelErrorFrames <= 5;
         const tempoValid = repDurationMs >= 700;
         if (!depthValid) {
             this.currentRep.feedback.add('Bend your knees a little more.');
@@ -317,9 +328,10 @@ export class SquatSessionEngine {
         }
         const depthPenalty = Math.max(0, this.currentRep.lowestKneeAngle - 108) * 2;
         const depthScore = clamp(Math.round(100 - depthPenalty), 20, 100);
-        const leanPenalty = Math.max(0, this.currentRep.maxTorsoLean - 50) * 1.8;
+        const leanPenalty = Math.max(0, this.currentRep.maxTorsoLean - 58) * 1.2;
+        const heelPenalty = frame.bodyHeight === 0 ? 0 : (this.currentRep.maxHeelLift / frame.bodyHeight) * 240;
         const tempoPenalty = tempoValid ? 0 : 10;
-        const postureScore = clamp(Math.round(100 - leanPenalty - tempoPenalty), 15, 100);
+        const postureScore = clamp(Math.round(100 - leanPenalty - heelPenalty - tempoPenalty), 15, 100);
         const repResult = {
             setNumber: this.setNumber,
             repInSet: this.repInSet + 1,
@@ -393,9 +405,12 @@ export class SquatSessionEngine {
         const last = this.lastVoiceAt.get(key) ?? -Infinity;
         if (timestampMs - last < minIntervalMs)
             return;
+        if (!interrupt && timestampMs - this.lastAnyVoiceAt < 3200)
+            return;
         if (events.some((event) => event.type === 'voice'))
             return;
         this.lastVoiceAt.set(key, timestampMs);
+        this.lastAnyVoiceAt = timestampMs;
         events.push({ type: 'voice', key, message, interrupt });
     }
     analyzeFrame(landmarks) {
