@@ -498,14 +498,6 @@ h2 {
   gap: 12px;
 }
 
-.live-topbar {
-  align-items: flex-start;
-}
-
-.live-title {
-  font-size: 1.15rem;
-}
-
 .camera-card {
   display: grid;
   gap: 10px;
@@ -545,19 +537,53 @@ h2 {
     linear-gradient(180deg, rgba(4, 9, 20, 0.25) 0%, rgba(4, 9, 20, 0.6) 72%, rgba(4, 9, 20, 0.92) 100%);
 }
 
-.camera-overlay-copy {
+.camera-hud {
   position: absolute;
-  inset: auto 14px 14px;
-  display: grid;
+  inset: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.camera-stats {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
-.camera-overlay-copy h2 {
-  font-size: 1.45rem;
+.camera-stat {
+  min-width: 118px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(4, 9, 20, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  display: grid;
+  gap: 6px;
 }
 
-.live-grid .metric-card {
-  min-height: 88px;
+.camera-stat span {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(245, 247, 251, 0.7);
+}
+
+.camera-stat strong {
+  font-family: "Sora", "Segoe UI", sans-serif;
+  font-size: 1.15rem;
+  letter-spacing: -0.04em;
+}
+
+.camera-rest-pill {
+  align-self: flex-start;
+}
+
+.camera-status {
+  align-self: center;
 }
 
 .diagnostic-grid,

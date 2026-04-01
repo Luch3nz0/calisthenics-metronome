@@ -39,7 +39,6 @@ const state: {
   activeUser: AuthUser | null
   sessions: StoredSession[]
   latestSession: StoredSession | null
-  voiceMuted: boolean
   bootstrapping: boolean
   live: LiveState
 } = {
@@ -48,7 +47,6 @@ const state: {
   activeUser: null,
   sessions: [],
   latestSession: null,
-  voiceMuted: false,
   bootstrapping: true,
   live: {
     engine: null,
@@ -112,26 +110,12 @@ const els = {
   detailsFocusList: byId<HTMLElement>('details-focus-list'),
   detailsTips: byId<HTMLElement>('details-tips'),
   detailsStartBtn: byId<HTMLButtonElement>('details-start-btn'),
-  liveBackBtn: byId<HTMLButtonElement>('live-back-btn'),
-  voiceToggleBtn: byId<HTMLButtonElement>('voice-toggle-btn'),
   cameraVideo: byId<HTMLVideoElement>('camera-video'),
   cameraCanvas: byId<HTMLCanvasElement>('camera-canvas'),
   orientationChip: byId<HTMLElement>('orientation-chip'),
-  liveCue: byId<HTMLElement>('live-cue'),
-  liveFeedback: byId<HTMLElement>('live-feedback'),
   cameraError: byId<HTMLElement>('camera-error'),
   liveSetValue: byId<HTMLElement>('live-set-value'),
   liveRepValue: byId<HTMLElement>('live-rep-value'),
-  liveValidValue: byId<HTMLElement>('live-valid-value'),
-  livePhaseValue: byId<HTMLElement>('live-phase-value'),
-  liveKneeValue: byId<HTMLElement>('live-knee-value'),
-  liveHipValue: byId<HTMLElement>('live-hip-value'),
-  liveTorsoValue: byId<HTMLElement>('live-torso-value'),
-  liveHeelValue: byId<HTMLElement>('live-heel-value'),
-  checkOrientation: byId<HTMLElement>('check-orientation'),
-  checkStance: byId<HTMLElement>('check-stance'),
-  checkDepth: byId<HTMLElement>('check-depth'),
-  checkHeels: byId<HTMLElement>('check-heels'),
   restPill: byId<HTMLElement>('rest-pill'),
   pauseToggleBtn: byId<HTMLButtonElement>('pause-toggle-btn'),
   quitBtn: byId<HTMLButtonElement>('quit-btn'),
@@ -190,15 +174,6 @@ function setActiveScreen(screen: ScreenKey): void {
 
 function setText(element: HTMLElement, value: string): void {
   element.textContent = value
-}
-
-function setCheck(element: HTMLElement, label: string, status: string, ok: boolean): void {
-  const title = element.querySelector('span')
-  const value = element.querySelector('strong')
-  if (title) title.textContent = label
-  if (value) value.textContent = status
-  element.classList.toggle('is-good', ok)
-  element.classList.toggle('is-bad', !ok)
 }
 
 function showAuthError(message: string): void {
@@ -357,43 +332,30 @@ function renderLiveSnapshot(snapshot: EngineSnapshot): void {
     snapshot.phase === 'SESSION_COMPLETE'
       ? `${squatTraining.session.protocol.sets} / ${squatTraining.session.protocol.sets}`
       : `${snapshot.setNumber} / ${squatTraining.session.protocol.sets}`
+  const liveRepLabel =
+    snapshot.phase === 'SESSION_COMPLETE'
+      ? `${squatTraining.session.protocol.repsPerSet} / ${squatTraining.session.protocol.repsPerSet}`
+      : `${snapshot.repInSet} / ${squatTraining.session.protocol.repsPerSet}`
+  const startPositionReady =
+    snapshot.phase === 'READY' ||
+    snapshot.phase === 'DESCENDING' ||
+    snapshot.phase === 'BOTTOM' ||
+    snapshot.phase === 'ASCENDING' ||
+    snapshot.phase === 'SESSION_COMPLETE' ||
+    (snapshot.orientationAccepted && snapshot.startPostureOk)
 
   setText(els.liveSetValue, liveSetLabel)
-  setText(els.liveRepValue, `${snapshot.repInSet} / ${squatTraining.session.protocol.repsPerSet}`)
-  setText(els.liveValidValue, `${snapshot.validReps} / ${snapshot.totalReps}`)
-  setText(els.livePhaseValue, snapshot.phaseLabel)
-  setText(els.liveCue, snapshot.coachMessage)
-
-  if (snapshot.metrics) {
-    setText(els.liveKneeValue, `${Math.round(snapshot.metrics.kneeAngle)}°`)
-    setText(els.liveHipValue, `${Math.round(snapshot.metrics.hipAngle)}°`)
-    setText(els.liveTorsoValue, `${Math.round(snapshot.metrics.torsoLean)}°`)
-    const heelPercent =
-      snapshot.metrics.bodyHeight === 0
-        ? 0
-        : (snapshot.metrics.effectiveHeelLift / snapshot.metrics.bodyHeight) * 100
-    setText(els.liveHeelValue, `${heelPercent.toFixed(1)}%`)
-    setText(
-      els.liveFeedback,
-      `Front camera active · tracking ${snapshot.trackedSide ?? 'one'} side · depth ${snapshot.metrics.reachedDepth ? 'hit' : 'pending'} · posture ${formatPercent(snapshot.postureScore)}`
-    )
-  } else {
-    setText(els.liveKneeValue, '--')
-    setText(els.liveHipValue, '--')
-    setText(els.liveTorsoValue, '--')
-    setText(els.liveHeelValue, '--')
-    setText(els.liveFeedback, 'Front camera is live. Full body visibility is required before the coach starts counting reps.')
-  }
-
-  els.orientationChip.className = 'status-pill'
+  setText(els.liveRepValue, liveRepLabel)
+  els.orientationChip.className = 'status-pill camera-status'
 
   if (snapshot.phase === 'REST') {
-    els.orientationChip.classList.add('is-rest')
-    setText(els.orientationChip, 'Rest in progress')
-  } else if (snapshot.orientationAccepted && snapshot.startPostureOk) {
+    els.orientationChip.hidden = true
+  } else if (startPositionReady) {
+    els.orientationChip.hidden = false
     els.orientationChip.classList.add('is-ready')
-    setText(els.orientationChip, 'Position ready')
+    setText(els.orientationChip, 'Starting position ready')
   } else {
+    els.orientationChip.hidden = false
     setText(els.orientationChip, 'Adjust position')
   }
 
@@ -404,17 +366,7 @@ function renderLiveSnapshot(snapshot: EngineSnapshot): void {
     els.restPill.hidden = true
   }
 
-  setCheck(els.checkOrientation, 'Orientation', snapshot.orientationAccepted ? 'Accepted' : 'Needs work', snapshot.orientationAccepted)
-  setCheck(els.checkStance, 'Start posture', snapshot.startPostureOk ? 'Ready' : 'Reset tall', snapshot.startPostureOk)
-
-  const depthReady = snapshot.metrics?.reachedDepth ?? false
-  setCheck(els.checkDepth, 'Depth', depthReady ? 'Reached' : 'Pending', depthReady)
-
-  const heelGood = snapshot.metrics ? snapshot.metrics.effectiveHeelLift <= snapshot.metrics.bodyHeight * 0.015 : false
-  setCheck(els.checkHeels, 'Heel control', heelGood ? 'Grounded' : 'Lifting', heelGood)
-
   els.pauseToggleBtn.textContent = state.live.paused ? 'Resume' : 'Pause'
-  els.voiceToggleBtn.textContent = state.voiceMuted ? 'Voice off' : 'Voice on'
 }
 
 function syncNavigation(): void {
@@ -838,12 +790,6 @@ async function bootstrap(): Promise<void> {
     void startLiveSession()
   })
 
-  els.liveBackBtn.addEventListener('click', () => {
-    if (window.confirm('Leave the live session? Current progress will be discarded.')) {
-      void quitLiveSession('details')
-    }
-  })
-
   els.quitBtn.addEventListener('click', () => {
     if (window.confirm('Quit the current session? Current progress will be discarded.')) {
       void quitLiveSession('details')
@@ -869,12 +815,6 @@ async function bootstrap(): Promise<void> {
     }
 
     if (state.live.snapshot) renderLiveSnapshot(state.live.snapshot)
-  })
-
-  els.voiceToggleBtn.addEventListener('click', () => {
-    state.voiceMuted = !state.voiceMuted
-    voiceCoach.setMuted(state.voiceMuted)
-    els.voiceToggleBtn.textContent = state.voiceMuted ? 'Voice off' : 'Voice on'
   })
 
   els.resultsHomeBtn.addEventListener('click', () => {

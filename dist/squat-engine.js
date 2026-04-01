@@ -109,6 +109,7 @@ export class SquatSessionEngine {
     repStartedAt = null;
     bottomHoldSince = null;
     restStartedAt = null;
+    needsSetStartCheck = true;
     readyBaseline = null;
     currentRep = this.createRepTracker();
     lastMetrics = null;
@@ -149,14 +150,20 @@ export class SquatSessionEngine {
                 events
             };
         }
-        if (this.phase !== 'WAITING_FOR_START_POSITION' && this.phase !== 'SESSION_COMPLETE') {
-            this.phase = 'WAITING_FOR_START_POSITION';
-            this.clearMovementState();
+        if (this.needsSetStartCheck) {
+            if (this.phase !== 'WAITING_FOR_START_POSITION' && this.phase !== 'SESSION_COMPLETE') {
+                this.phase = 'WAITING_FOR_START_POSITION';
+                this.clearMovementState();
+            }
+            this.readyStableSince = null;
+            this.maybeSpeak(events, 'move-into-frame', READY_COPY['move-into-frame'], timestampMs, 2600);
+            return {
+                snapshot: this.buildSnapshot(null, READY_COPY['move-into-frame']),
+                events
+            };
         }
-        this.readyStableSince = null;
-        this.maybeSpeak(events, 'move-into-frame', READY_COPY['move-into-frame'], timestampMs, 2600);
         return {
-            snapshot: this.buildSnapshot(null, READY_COPY['move-into-frame']),
+            snapshot: this.buildSnapshot(null, this.messageForState(null)),
             events
         };
     }
@@ -173,7 +180,7 @@ export class SquatSessionEngine {
                 events
             };
         }
-        if (!frame.orientation.accepted || !frame.startPostureOk) {
+        if (this.needsSetStartCheck && (!frame.orientation.accepted || !frame.startPostureOk)) {
             this.phase = 'WAITING_FOR_START_POSITION';
             this.readyStableSince = null;
             this.clearMovementState();
@@ -186,11 +193,17 @@ export class SquatSessionEngine {
         }
         switch (this.phase) {
             case 'WAITING_FOR_START_POSITION': {
+                if (!this.needsSetStartCheck) {
+                    this.phase = 'READY';
+                    this.captureTopMetrics(frame);
+                    break;
+                }
                 if (this.readyStableSince === null) {
                     this.readyStableSince = timestampMs;
                 }
                 if (timestampMs - this.readyStableSince >= 700) {
                     this.phase = 'READY';
+                    this.needsSetStartCheck = false;
                     this.captureTopMetrics(frame);
                     this.maybeSpeak(events, 'start-performing', 'Start performing the exercise.', timestampMs, 900);
                 }
@@ -377,10 +390,12 @@ export class SquatSessionEngine {
         this.restStartedAt = null;
         this.readyStableSince = null;
         this.currentRep = this.createRepTracker();
+        this.needsSetStartCheck = true;
         if (frame && frame.readyToStart) {
             this.readyStableSince = timestampMs;
             this.captureTopMetrics(frame);
             this.phase = 'READY';
+            this.needsSetStartCheck = false;
             this.maybeSpeak(events, 'start-performing', 'Start performing the exercise.', timestampMs, 900);
         }
     }

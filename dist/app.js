@@ -9,7 +9,6 @@ const state = {
     activeUser: null,
     sessions: [],
     latestSession: null,
-    voiceMuted: false,
     bootstrapping: true,
     live: {
         engine: null,
@@ -72,26 +71,12 @@ const els = {
     detailsFocusList: byId('details-focus-list'),
     detailsTips: byId('details-tips'),
     detailsStartBtn: byId('details-start-btn'),
-    liveBackBtn: byId('live-back-btn'),
-    voiceToggleBtn: byId('voice-toggle-btn'),
     cameraVideo: byId('camera-video'),
     cameraCanvas: byId('camera-canvas'),
     orientationChip: byId('orientation-chip'),
-    liveCue: byId('live-cue'),
-    liveFeedback: byId('live-feedback'),
     cameraError: byId('camera-error'),
     liveSetValue: byId('live-set-value'),
     liveRepValue: byId('live-rep-value'),
-    liveValidValue: byId('live-valid-value'),
-    livePhaseValue: byId('live-phase-value'),
-    liveKneeValue: byId('live-knee-value'),
-    liveHipValue: byId('live-hip-value'),
-    liveTorsoValue: byId('live-torso-value'),
-    liveHeelValue: byId('live-heel-value'),
-    checkOrientation: byId('check-orientation'),
-    checkStance: byId('check-stance'),
-    checkDepth: byId('check-depth'),
-    checkHeels: byId('check-heels'),
     restPill: byId('rest-pill'),
     pauseToggleBtn: byId('pause-toggle-btn'),
     quitBtn: byId('quit-btn'),
@@ -143,16 +128,6 @@ function setActiveScreen(screen) {
 }
 function setText(element, value) {
     element.textContent = value;
-}
-function setCheck(element, label, status, ok) {
-    const title = element.querySelector('span');
-    const value = element.querySelector('strong');
-    if (title)
-        title.textContent = label;
-    if (value)
-        value.textContent = status;
-    element.classList.toggle('is-good', ok);
-    element.classList.toggle('is-bad', !ok);
 }
 function showAuthError(message) {
     els.authError.hidden = message.trim() === '';
@@ -282,38 +257,28 @@ function renderLiveSnapshot(snapshot) {
     const liveSetLabel = snapshot.phase === 'SESSION_COMPLETE'
         ? `${squatTraining.session.protocol.sets} / ${squatTraining.session.protocol.sets}`
         : `${snapshot.setNumber} / ${squatTraining.session.protocol.sets}`;
+    const liveRepLabel = snapshot.phase === 'SESSION_COMPLETE'
+        ? `${squatTraining.session.protocol.repsPerSet} / ${squatTraining.session.protocol.repsPerSet}`
+        : `${snapshot.repInSet} / ${squatTraining.session.protocol.repsPerSet}`;
+    const startPositionReady = snapshot.phase === 'READY' ||
+        snapshot.phase === 'DESCENDING' ||
+        snapshot.phase === 'BOTTOM' ||
+        snapshot.phase === 'ASCENDING' ||
+        snapshot.phase === 'SESSION_COMPLETE' ||
+        (snapshot.orientationAccepted && snapshot.startPostureOk);
     setText(els.liveSetValue, liveSetLabel);
-    setText(els.liveRepValue, `${snapshot.repInSet} / ${squatTraining.session.protocol.repsPerSet}`);
-    setText(els.liveValidValue, `${snapshot.validReps} / ${snapshot.totalReps}`);
-    setText(els.livePhaseValue, snapshot.phaseLabel);
-    setText(els.liveCue, snapshot.coachMessage);
-    if (snapshot.metrics) {
-        setText(els.liveKneeValue, `${Math.round(snapshot.metrics.kneeAngle)}°`);
-        setText(els.liveHipValue, `${Math.round(snapshot.metrics.hipAngle)}°`);
-        setText(els.liveTorsoValue, `${Math.round(snapshot.metrics.torsoLean)}°`);
-        const heelPercent = snapshot.metrics.bodyHeight === 0
-            ? 0
-            : (snapshot.metrics.effectiveHeelLift / snapshot.metrics.bodyHeight) * 100;
-        setText(els.liveHeelValue, `${heelPercent.toFixed(1)}%`);
-        setText(els.liveFeedback, `Front camera active · tracking ${snapshot.trackedSide ?? 'one'} side · depth ${snapshot.metrics.reachedDepth ? 'hit' : 'pending'} · posture ${formatPercent(snapshot.postureScore)}`);
-    }
-    else {
-        setText(els.liveKneeValue, '--');
-        setText(els.liveHipValue, '--');
-        setText(els.liveTorsoValue, '--');
-        setText(els.liveHeelValue, '--');
-        setText(els.liveFeedback, 'Front camera is live. Full body visibility is required before the coach starts counting reps.');
-    }
-    els.orientationChip.className = 'status-pill';
+    setText(els.liveRepValue, liveRepLabel);
+    els.orientationChip.className = 'status-pill camera-status';
     if (snapshot.phase === 'REST') {
-        els.orientationChip.classList.add('is-rest');
-        setText(els.orientationChip, 'Rest in progress');
+        els.orientationChip.hidden = true;
     }
-    else if (snapshot.orientationAccepted && snapshot.startPostureOk) {
+    else if (startPositionReady) {
+        els.orientationChip.hidden = false;
         els.orientationChip.classList.add('is-ready');
-        setText(els.orientationChip, 'Position ready');
+        setText(els.orientationChip, 'Starting position ready');
     }
     else {
+        els.orientationChip.hidden = false;
         setText(els.orientationChip, 'Adjust position');
     }
     if (snapshot.phase === 'REST') {
@@ -323,14 +288,7 @@ function renderLiveSnapshot(snapshot) {
     else {
         els.restPill.hidden = true;
     }
-    setCheck(els.checkOrientation, 'Orientation', snapshot.orientationAccepted ? 'Accepted' : 'Needs work', snapshot.orientationAccepted);
-    setCheck(els.checkStance, 'Start posture', snapshot.startPostureOk ? 'Ready' : 'Reset tall', snapshot.startPostureOk);
-    const depthReady = snapshot.metrics?.reachedDepth ?? false;
-    setCheck(els.checkDepth, 'Depth', depthReady ? 'Reached' : 'Pending', depthReady);
-    const heelGood = snapshot.metrics ? snapshot.metrics.effectiveHeelLift <= snapshot.metrics.bodyHeight * 0.015 : false;
-    setCheck(els.checkHeels, 'Heel control', heelGood ? 'Grounded' : 'Lifting', heelGood);
     els.pauseToggleBtn.textContent = state.live.paused ? 'Resume' : 'Pause';
-    els.voiceToggleBtn.textContent = state.voiceMuted ? 'Voice off' : 'Voice on';
 }
 function syncNavigation() {
     const isHome = state.screen === 'home';
@@ -685,11 +643,6 @@ async function bootstrap() {
     els.detailsStartBtn.addEventListener('click', () => {
         void startLiveSession();
     });
-    els.liveBackBtn.addEventListener('click', () => {
-        if (window.confirm('Leave the live session? Current progress will be discarded.')) {
-            void quitLiveSession('details');
-        }
-    });
     els.quitBtn.addEventListener('click', () => {
         if (window.confirm('Quit the current session? Current progress will be discarded.')) {
             void quitLiveSession('details');
@@ -715,11 +668,6 @@ async function bootstrap() {
         }
         if (state.live.snapshot)
             renderLiveSnapshot(state.live.snapshot);
-    });
-    els.voiceToggleBtn.addEventListener('click', () => {
-        state.voiceMuted = !state.voiceMuted;
-        voiceCoach.setMuted(state.voiceMuted);
-        els.voiceToggleBtn.textContent = state.voiceMuted ? 'Voice off' : 'Voice on';
     });
     els.resultsHomeBtn.addEventListener('click', () => {
         state.latestSession = null;
