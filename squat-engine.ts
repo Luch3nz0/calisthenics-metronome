@@ -117,11 +117,9 @@ type AnalyzedFrame = {
 
 type RepTracker = {
   depthReached: boolean
-  heelErrorFrames: number
   leanErrorFrames: number
   lowestKneeAngle: number
   maxTorsoLean: number
-  maxHeelLift: number
   feedback: Set<string>
 }
 
@@ -369,12 +367,12 @@ export class SquatSessionEngine {
       }
 
       case 'READY': {
-        this.captureTopMetrics(frame)
-
         if (this.shouldStartDescending(frame)) {
           this.phase = 'DESCENDING'
           this.repStartedAt = timestampMs
           this.currentRep = this.createRepTracker()
+        } else if (this.isTopPosition(frame)) {
+          this.captureTopMetrics(frame)
         }
 
         break
@@ -407,11 +405,9 @@ export class SquatSessionEngine {
   private createRepTracker(): RepTracker {
     return {
       depthReached: false,
-      heelErrorFrames: 0,
       leanErrorFrames: 0,
       lowestKneeAngle: 180,
       maxTorsoLean: 0,
-      maxHeelLift: 0,
       feedback: new Set<string>()
     }
   }
@@ -433,49 +429,37 @@ export class SquatSessionEngine {
   }
 
   private shouldStartDescending(frame: AnalyzedFrame): boolean {
-    if (!this.readyBaseline) return false
-
-    return (
-      frame.metrics.kneeAngle <= this.readyBaseline.kneeAngle - 12 &&
-      frame.metrics.hipAngle <= this.readyBaseline.hipAngle - 8
-    )
+    const baselineKnee = this.readyBaseline?.kneeAngle ?? 165
+    const descendThreshold = Math.min(baselineKnee - 18, 145)
+    return frame.metrics.kneeAngle <= descendThreshold
   }
 
   private isTopPosition(frame: AnalyzedFrame): boolean {
-    return (
-      frame.metrics.kneeAngle >= 160 &&
-      frame.metrics.hipAngle >= 150 &&
-      frame.metrics.torsoLean <= 22
-    )
+    return frame.metrics.kneeAngle >= 152 && frame.metrics.torsoLean <= 52
   }
 
   private isMovingUp(frame: AnalyzedFrame): boolean {
-    if (this.lastHipY === null || this.lastMetrics === null) return false
-    return frame.sidePoints.hip.y < this.lastHipY - 0.0025 && frame.metrics.kneeAngle > this.lastMetrics.kneeAngle
+    if (this.lastMetrics === null) return false
+    const kneeOpening = frame.metrics.kneeAngle >= this.lastMetrics.kneeAngle + 2
+    const hipRising = this.lastHipY !== null && frame.sidePoints.hip.y < this.lastHipY - 0.0015
+    return kneeOpening || hipRising
   }
 
   private trackRepFrame(frame: AnalyzedFrame, timestampMs: number, events: EngineEvent[]): void {
-    const heelLiftThreshold = frame.bodyHeight * 0.015
-    const excessiveLean = frame.metrics.torsoLean > 45
-    const heelLifted = frame.metrics.effectiveHeelLift > heelLiftThreshold
+    const excessiveLean = frame.metrics.torsoLean > 52
 
-    this.currentRep.depthReached ||= frame.metrics.reachedDepth
+    this.currentRep.depthReached ||= frame.metrics.reachedDepth || frame.metrics.kneeAngle <= 110
     this.currentRep.lowestKneeAngle = Math.min(this.currentRep.lowestKneeAngle, frame.metrics.kneeAngle)
     this.currentRep.maxTorsoLean = Math.max(this.currentRep.maxTorsoLean, frame.metrics.torsoLean)
-    this.currentRep.maxHeelLift = Math.max(this.currentRep.maxHeelLift, frame.metrics.effectiveHeelLift)
 
-    if (heelLifted) {
-      this.currentRep.heelErrorFrames += 1
-      this.currentRep.feedback.add('Keep your heels on the ground.')
-      this.maybeSpeak(events, 'keep-heels-down', 'Keep your heels on the ground.', timestampMs, 1800)
-    } else if (excessiveLean) {
+    if (excessiveLean) {
       this.currentRep.leanErrorFrames += 1
-      this.currentRep.feedback.add('Keep your back straight.')
-      this.maybeSpeak(events, 'keep-back-straight', 'Keep your back straight.', timestampMs, 1800)
+      this.currentRep.feedback.add('Keep your chest more upright.')
+      this.maybeSpeak(events, 'keep-chest-upright', 'Keep your chest more upright.', timestampMs, 1800)
     }
 
     if (this.phase === 'DESCENDING') {
-      if (frame.metrics.kneeAngle <= 95 || frame.metrics.reachedDepth) {
+      if (frame.metrics.kneeAngle <= 110 || this.currentRep.depthReached) {
         this.phase = 'BOTTOM'
         this.bottomHoldSince = timestampMs
       }
@@ -497,24 +481,23 @@ export class SquatSessionEngine {
   private completeRep(frame: AnalyzedFrame, timestampMs: number, events: EngineEvent[]): void {
     const repDurationMs = Math.max(0, timestampMs - (this.repStartedAt ?? timestampMs))
     const depthValid = this.currentRep.depthReached
-    const postureValid = this.currentRep.heelErrorFrames <= 2 && this.currentRep.leanErrorFrames <= 3
-    const tempoValid = repDurationMs >= 1000
+    const postureValid = this.currentRep.leanErrorFrames <= 4
+    const tempoValid = repDurationMs >= 700
 
     if (!depthValid) {
-      this.currentRep.feedback.add('Go a little lower.')
+      this.currentRep.feedback.add('Bend your knees a little more.')
     }
 
     if (!tempoValid) {
       this.currentRep.feedback.add('Slow down.')
     }
 
-    const depthPenalty = Math.max(0, this.currentRep.lowestKneeAngle - 95) * 2.4
+    const depthPenalty = Math.max(0, this.currentRep.lowestKneeAngle - 108) * 2
     const depthScore = clamp(Math.round(100 - depthPenalty), 20, 100)
 
-    const leanPenalty = Math.max(0, this.currentRep.maxTorsoLean - 40) * 2
-    const heelPenalty = frame.bodyHeight === 0 ? 0 : (this.currentRep.maxHeelLift / frame.bodyHeight) * 600
-    const tempoPenalty = tempoValid ? 0 : 16
-    const postureScore = clamp(Math.round(100 - leanPenalty - heelPenalty - tempoPenalty), 15, 100)
+    const leanPenalty = Math.max(0, this.currentRep.maxTorsoLean - 50) * 1.8
+    const tempoPenalty = tempoValid ? 0 : 10
+    const postureScore = clamp(Math.round(100 - leanPenalty - tempoPenalty), 15, 100)
 
     const repResult: RepResult = {
       setNumber: this.setNumber,
