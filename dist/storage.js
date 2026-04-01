@@ -1,16 +1,25 @@
-const REGISTERED_USER_KEY = 'noskip-registered-user';
-const ACTIVE_USER_KEY = 'noskip-active-user';
-const SESSION_HISTORY_KEY = 'noskip-session-history';
-function readJson(key, fallback) {
-    const raw = localStorage.getItem(key);
-    if (!raw)
-        return fallback;
+async function readJson(response) {
+    return (await response.json());
+}
+async function readErrorMessage(response, fallback) {
     try {
-        return JSON.parse(raw);
+        const payload = await readJson(response);
+        return payload.message?.trim() || fallback;
     }
     catch {
         return fallback;
     }
+}
+async function requestJson(path, init) {
+    const headers = new Headers(init?.headers);
+    if (!headers.has('Content-Type') && init?.body) {
+        headers.set('Content-Type', 'application/json');
+    }
+    return fetch(path, {
+        ...init,
+        credentials: 'same-origin',
+        headers
+    });
 }
 function toDateKey(value) {
     const date = new Date(value);
@@ -24,66 +33,68 @@ function addDays(date, amount) {
     next.setDate(next.getDate() + amount);
     return next;
 }
-export function getRegisteredUser() {
-    return readJson(REGISTERED_USER_KEY, null);
+export async function getActiveUser() {
+    const response = await requestJson('/api/auth/me');
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response, 'Could not load the current user.'));
+    }
+    const payload = await readJson(response);
+    return payload.user;
 }
-export function hasRegisteredUser() {
-    return getRegisteredUser() !== null;
-}
-export function getActiveUser() {
-    const registered = getRegisteredUser();
-    const activeEmail = localStorage.getItem(ACTIVE_USER_KEY);
-    if (!registered || !activeEmail)
-        return null;
-    if (registered.email.toLowerCase() !== activeEmail.toLowerCase())
-        return null;
-    return registered;
-}
-export function registerUser(name, email, password) {
-    const normalizedEmail = email.trim().toLowerCase();
-    const existing = getRegisteredUser();
-    if (existing && existing.email.toLowerCase() !== normalizedEmail) {
+export async function registerUser(name, email, password) {
+    const response = await requestJson('/api/auth/signup', {
+        method: 'POST',
+        body: JSON.stringify({ name, email, password })
+    });
+    if (!response.ok) {
         return {
             ok: false,
-            message: 'This MVP keeps one local account per device. Log in with the existing account or clear local storage.'
+            message: await readErrorMessage(response, 'Could not create the account.')
         };
     }
-    const user = {
-        name: name.trim(),
-        email: normalizedEmail,
-        password,
-        createdAt: existing?.createdAt ?? new Date().toISOString()
-    };
-    localStorage.setItem(REGISTERED_USER_KEY, JSON.stringify(user));
-    localStorage.setItem(ACTIVE_USER_KEY, normalizedEmail);
-    return { ok: true };
+    return readJson(response);
 }
-export function loginUser(email, password) {
-    const registered = getRegisteredUser();
-    if (!registered) {
-        return { ok: false, message: 'No account found on this device yet. Create one first.' };
+export async function loginUser(email, password) {
+    const response = await requestJson('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password })
+    });
+    if (!response.ok) {
+        return {
+            ok: false,
+            message: await readErrorMessage(response, 'Could not log in.')
+        };
     }
-    const normalizedEmail = email.trim().toLowerCase();
-    if (registered.email.toLowerCase() !== normalizedEmail || registered.password !== password) {
-        return { ok: false, message: 'Email or password is incorrect.' };
+    return readJson(response);
+}
+export async function logoutUser() {
+    const response = await requestJson('/api/auth/logout', {
+        method: 'POST'
+    });
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response, 'Could not log out.'));
     }
-    localStorage.setItem(ACTIVE_USER_KEY, normalizedEmail);
-    return { ok: true };
 }
-export function logoutUser() {
-    localStorage.removeItem(ACTIVE_USER_KEY);
+export async function getSessionsForUser() {
+    const response = await requestJson('/api/history');
+    if (response.status === 401)
+        return [];
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response, 'Could not load session history.'));
+    }
+    const payload = await readJson(response);
+    return payload.sessions;
 }
-export function getSessionsForUser(email) {
-    const normalizedEmail = email.trim().toLowerCase();
-    const allSessions = readJson(SESSION_HISTORY_KEY, []);
-    return allSessions
-        .filter((session) => session.userEmail.toLowerCase() === normalizedEmail)
-        .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
-}
-export function saveSession(session) {
-    const allSessions = readJson(SESSION_HISTORY_KEY, []);
-    allSessions.push(session);
-    localStorage.setItem(SESSION_HISTORY_KEY, JSON.stringify(allSessions));
+export async function saveSession(session) {
+    const response = await requestJson('/api/history', {
+        method: 'POST',
+        body: JSON.stringify(session)
+    });
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response, 'Could not save the session.'));
+    }
+    const payload = await readJson(response);
+    return payload.session;
 }
 export function getProfileStats(sessions) {
     if (sessions.length === 0) {

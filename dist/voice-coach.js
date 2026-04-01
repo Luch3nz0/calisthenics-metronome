@@ -1,8 +1,6 @@
 export class VoiceCoach {
-    constructor() {
-        this.lastSpokenAt = new Map();
-        this.muted = false;
-    }
+    lastSpokenAt = new Map();
+    muted = false;
     setMuted(nextMuted) {
         this.muted = nextMuted;
         if (nextMuted)

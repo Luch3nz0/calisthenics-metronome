@@ -1,9 +1,26 @@
-FROM nginx:1.27-alpine
+FROM node:22-alpine AS builder
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY index.html /usr/share/nginx/html/index.html
-COPY styles.css /usr/share/nginx/html/styles.css
-COPY assets /usr/share/nginx/html/assets
-COPY dist /usr/share/nginx/html/dist
+WORKDIR /app
 
-EXPOSE 80
+COPY package.json package-lock.json tsconfig.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+FROM node:22-alpine
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/index.html ./index.html
+COPY --from=builder /app/styles.css ./styles.css
+COPY --from=builder /app/assets ./assets
+
+EXPOSE 8080
+
+CMD ["npm", "run", "start"]

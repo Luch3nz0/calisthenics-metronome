@@ -1,46 +1,54 @@
-export interface StoredUser {
-  name: string
-  email: string
-  password: string
-  createdAt: string
+import type { AuthUser, ProfileStats, SessionDraft, StoredSession } from './shared-types.js'
+
+export type { AuthUser, ProfileStats, SessionDraft, StoredSession } from './shared-types.js'
+
+type ApiErrorPayload = {
+  message?: string
 }
 
-export interface StoredSession {
-  id: string
-  userEmail: string
-  completedAt: string
-  durationSeconds: number
-  totalReps: number
-  validReps: number
-  invalidReps: number
-  depthScore: number
-  postureScore: number
-  notes: string[]
-  totalSets: number
-  repsPerSet: number
+type AuthResponse = {
+  ok: boolean
+  user?: AuthUser
+  message?: string
 }
 
-export interface ProfileStats {
-  totalSessions: number
-  totalValidReps: number
-  avgDepthScore: number
-  avgPostureScore: number
-  streakDays: number
+type MeResponse = {
+  user: AuthUser | null
 }
 
-const REGISTERED_USER_KEY = 'noskip-registered-user'
-const ACTIVE_USER_KEY = 'noskip-active-user'
-const SESSION_HISTORY_KEY = 'noskip-session-history'
+type HistoryResponse = {
+  sessions: StoredSession[]
+}
 
-function readJson<T>(key: string, fallback: T): T {
-  const raw = localStorage.getItem(key)
-  if (!raw) return fallback
+type SaveSessionResponse = {
+  session: StoredSession
+}
 
+async function readJson<T>(response: Response): Promise<T> {
+  return (await response.json()) as T
+}
+
+async function readErrorMessage(response: Response, fallback: string): Promise<string> {
   try {
-    return JSON.parse(raw) as T
+    const payload = await readJson<ApiErrorPayload>(response)
+    return payload.message?.trim() || fallback
   } catch {
     return fallback
   }
+}
+
+async function requestJson<T>(path: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers)
+
+  if (!headers.has('Content-Type') && init?.body) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  return fetch(path, {
+    ...init,
+    credentials: 'same-origin',
+    headers
+  })
 }
 
 function toDateKey(value: string): string {
@@ -57,82 +65,90 @@ function addDays(date: Date, amount: number): Date {
   return next
 }
 
-export function getRegisteredUser(): StoredUser | null {
-  return readJson<StoredUser | null>(REGISTERED_USER_KEY, null)
+export async function getActiveUser(): Promise<AuthUser | null> {
+  const response = await requestJson<MeResponse>('/api/auth/me')
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Could not load the current user.'))
+  }
+
+  const payload = await readJson<MeResponse>(response)
+  return payload.user
 }
 
-export function hasRegisteredUser(): boolean {
-  return getRegisteredUser() !== null
-}
+export async function registerUser(
+  name: string,
+  email: string,
+  password: string
+): Promise<{ ok: boolean; message?: string; user?: AuthUser }> {
+  const response = await requestJson<AuthResponse>('/api/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify({ name, email, password })
+  })
 
-export function getActiveUser(): StoredUser | null {
-  const registered = getRegisteredUser()
-  const activeEmail = localStorage.getItem(ACTIVE_USER_KEY)
-
-  if (!registered || !activeEmail) return null
-  if (registered.email.toLowerCase() !== activeEmail.toLowerCase()) return null
-
-  return registered
-}
-
-export function registerUser(name: string, email: string, password: string): { ok: boolean; message?: string } {
-  const normalizedEmail = email.trim().toLowerCase()
-  const existing = getRegisteredUser()
-
-  if (existing && existing.email.toLowerCase() !== normalizedEmail) {
+  if (!response.ok) {
     return {
       ok: false,
-      message: 'This MVP keeps one local account per device. Log in with the existing account or clear local storage.'
+      message: await readErrorMessage(response, 'Could not create the account.')
     }
   }
 
-  const user: StoredUser = {
-    name: name.trim(),
-    email: normalizedEmail,
-    password,
-    createdAt: existing?.createdAt ?? new Date().toISOString()
+  return readJson<AuthResponse>(response)
+}
+
+export async function loginUser(
+  email: string,
+  password: string
+): Promise<{ ok: boolean; message?: string; user?: AuthUser }> {
+  const response = await requestJson<AuthResponse>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password })
+  })
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      message: await readErrorMessage(response, 'Could not log in.')
+    }
   }
 
-  localStorage.setItem(REGISTERED_USER_KEY, JSON.stringify(user))
-  localStorage.setItem(ACTIVE_USER_KEY, normalizedEmail)
-
-  return { ok: true }
+  return readJson<AuthResponse>(response)
 }
 
-export function loginUser(email: string, password: string): { ok: boolean; message?: string } {
-  const registered = getRegisteredUser()
+export async function logoutUser(): Promise<void> {
+  const response = await requestJson<AuthResponse>('/api/auth/logout', {
+    method: 'POST'
+  })
 
-  if (!registered) {
-    return { ok: false, message: 'No account found on this device yet. Create one first.' }
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Could not log out.'))
+  }
+}
+
+export async function getSessionsForUser(): Promise<StoredSession[]> {
+  const response = await requestJson<HistoryResponse>('/api/history')
+
+  if (response.status === 401) return []
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Could not load session history.'))
   }
 
-  const normalizedEmail = email.trim().toLowerCase()
+  const payload = await readJson<HistoryResponse>(response)
+  return payload.sessions
+}
 
-  if (registered.email.toLowerCase() !== normalizedEmail || registered.password !== password) {
-    return { ok: false, message: 'Email or password is incorrect.' }
+export async function saveSession(session: SessionDraft): Promise<StoredSession> {
+  const response = await requestJson<SaveSessionResponse>('/api/history', {
+    method: 'POST',
+    body: JSON.stringify(session)
+  })
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Could not save the session.'))
   }
 
-  localStorage.setItem(ACTIVE_USER_KEY, normalizedEmail)
-  return { ok: true }
-}
-
-export function logoutUser(): void {
-  localStorage.removeItem(ACTIVE_USER_KEY)
-}
-
-export function getSessionsForUser(email: string): StoredSession[] {
-  const normalizedEmail = email.trim().toLowerCase()
-  const allSessions = readJson<StoredSession[]>(SESSION_HISTORY_KEY, [])
-
-  return allSessions
-    .filter((session) => session.userEmail.toLowerCase() === normalizedEmail)
-    .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime())
-}
-
-export function saveSession(session: StoredSession): void {
-  const allSessions = readJson<StoredSession[]>(SESSION_HISTORY_KEY, [])
-  allSessions.push(session)
-  localStorage.setItem(SESSION_HISTORY_KEY, JSON.stringify(allSessions))
+  const payload = await readJson<SaveSessionResponse>(response)
+  return payload.session
 }
 
 export function getProfileStats(sessions: StoredSession[]): ProfileStats {

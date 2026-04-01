@@ -534,6 +534,7 @@ h2 {
 .camera-video,
 .camera-canvas {
   object-fit: cover;
+  transform: scaleX(-1);
 }
 
 .camera-gradient {

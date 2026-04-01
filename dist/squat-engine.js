@@ -90,32 +90,33 @@ function capitalize(value) {
     return value.charAt(0).toUpperCase() + value.slice(1);
 }
 export class SquatSessionEngine {
+    protocol;
+    smoothing = {
+        kneeAngle: [],
+        hipAngle: [],
+        ankleAngle: [],
+        torsoLean: [],
+        torsoTibiaDelta: []
+    };
+    phase = 'WAITING_FOR_START_POSITION';
+    setNumber = 1;
+    repInSet = 0;
+    totalReps = 0;
+    validReps = 0;
+    invalidReps = 0;
+    results = [];
+    readyStableSince = null;
+    repStartedAt = null;
+    bottomHoldSince = null;
+    restStartedAt = null;
+    readyBaseline = null;
+    currentRep = this.createRepTracker();
+    lastMetrics = null;
+    lastHipY = null;
+    pausedAt = null;
+    restGetReadyAnnounced = false;
+    lastVoiceAt = new Map();
     constructor(protocol) {
-        this.smoothing = {
-            kneeAngle: [],
-            hipAngle: [],
-            ankleAngle: [],
-            torsoLean: [],
-            torsoTibiaDelta: []
-        };
-        this.phase = 'WAITING_FOR_START_POSITION';
-        this.setNumber = 1;
-        this.repInSet = 0;
-        this.totalReps = 0;
-        this.validReps = 0;
-        this.invalidReps = 0;
-        this.results = [];
-        this.readyStableSince = null;
-        this.repStartedAt = null;
-        this.bottomHoldSince = null;
-        this.restStartedAt = null;
-        this.readyBaseline = null;
-        this.currentRep = this.createRepTracker();
-        this.lastMetrics = null;
-        this.lastHipY = null;
-        this.pausedAt = null;
-        this.restGetReadyAnnounced = false;
-        this.lastVoiceAt = new Map();
         this.protocol = protocol;
     }
     pause(timestampMs) {
@@ -265,11 +266,10 @@ export class SquatSessionEngine {
         return frame.sidePoints.hip.y < this.lastHipY - 0.0025 && frame.metrics.kneeAngle > this.lastMetrics.kneeAngle;
     }
     trackRepFrame(frame, timestampMs, events) {
-        var _a;
         const heelLiftThreshold = frame.bodyHeight * 0.015;
         const excessiveLean = frame.metrics.torsoLean > 45;
         const heelLifted = frame.metrics.effectiveHeelLift > heelLiftThreshold;
-        (_a = this.currentRep).depthReached || (_a.depthReached = frame.metrics.reachedDepth);
+        this.currentRep.depthReached ||= frame.metrics.reachedDepth;
         this.currentRep.lowestKneeAngle = Math.min(this.currentRep.lowestKneeAngle, frame.metrics.kneeAngle);
         this.currentRep.maxTorsoLean = Math.max(this.currentRep.maxTorsoLean, frame.metrics.torsoLean);
         this.currentRep.maxHeelLift = Math.max(this.currentRep.maxHeelLift, frame.metrics.effectiveHeelLift);

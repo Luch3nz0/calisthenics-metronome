@@ -3,13 +3,13 @@ import {
   getActiveUser,
   getProfileStats,
   getSessionsForUser,
-  hasRegisteredUser,
   loginUser,
   logoutUser,
   registerUser,
   saveSession,
   type StoredSession,
-  type StoredUser
+  type AuthUser,
+  type SessionDraft
 } from './storage.js'
 import { SquatSessionEngine, type EngineSnapshot, type PoseLandmark } from './squat-engine.js'
 import { VoiceCoach } from './voice-coach.js'
@@ -36,18 +36,20 @@ const voiceCoach = new VoiceCoach()
 const state: {
   screen: ScreenKey
   authMode: AuthMode
-  activeUser: StoredUser | null
+  activeUser: AuthUser | null
   sessions: StoredSession[]
   latestSession: StoredSession | null
   voiceMuted: boolean
+  bootstrapping: boolean
   live: LiveState
 } = {
   screen: 'auth',
-  authMode: hasRegisteredUser() ? 'login' : 'signup',
-  activeUser: getActiveUser(),
+  authMode: 'signup',
+  activeUser: null,
   sessions: [],
   latestSession: null,
   voiceMuted: false,
+  bootstrapping: true,
   live: {
     engine: null,
     pose: null,
@@ -65,10 +67,7 @@ const state: {
 
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id)
-  if (!element) {
-    throw new Error(`Missing element: ${id}`)
-  }
-
+  if (!element) throw new Error(`Missing element: ${id}`)
   return element as T
 }
 
@@ -80,12 +79,6 @@ function queryScreen(screen: ScreenKey): HTMLElement {
 
 const els = {
   screens: Array.from(document.querySelectorAll<HTMLElement>('[data-screen]')),
-  authScreen: queryScreen('auth'),
-  homeScreen: queryScreen('home'),
-  detailsScreen: queryScreen('details'),
-  liveScreen: queryScreen('live'),
-  resultsScreen: queryScreen('results'),
-  profileScreen: queryScreen('profile'),
   authForm: byId<HTMLFormElement>('auth-form'),
   authModeLabel: byId<HTMLElement>('auth-mode-label'),
   authTitle: byId<HTMLElement>('auth-title'),
@@ -182,9 +175,9 @@ function formatDate(value: string): string {
   }).format(new Date(value))
 }
 
-function refreshUserData(): void {
-  state.activeUser = getActiveUser()
-  state.sessions = state.activeUser ? getSessionsForUser(state.activeUser.email) : []
+async function refreshUserData(): Promise<void> {
+  state.activeUser = await getActiveUser()
+  state.sessions = state.activeUser ? await getSessionsForUser() : []
 }
 
 function setActiveScreen(screen: ScreenKey): void {
@@ -219,13 +212,16 @@ function renderAuth(): void {
   els.authModeLabel.textContent = isSignup ? 'Create account' : 'Log in'
   els.authTitle.textContent = isSignup ? 'Start your Noskip profile' : 'Welcome back to Noskip'
   els.authHelper.textContent = isSignup
-    ? 'Create a local MVP account so the squat coach can greet you and store your history on this device.'
-    : 'Log in with the local account already stored on this device.'
+    ? 'Create a secure account so your squat sessions and history sync to the backend.'
+    : 'Log in to continue your saved squat history and profile progress.'
   els.authNameRow.hidden = !isSignup
   els.authSubmitBtn.textContent = isSignup ? 'Create account' : 'Log in'
   els.authSwitchCopy.textContent = isSignup ? 'Already have an account?' : 'Need an account instead?'
   els.authSwitchBtn.textContent = isSignup ? 'Log in' : 'Create one'
-  showAuthError('')
+
+  if (!state.bootstrapping) {
+    showAuthError('')
+  }
 }
 
 function renderHome(): void {
@@ -235,7 +231,7 @@ function renderHome(): void {
   setText(els.homeGreeting, `${user.name}, your squat coach is ready.`)
   setText(
     els.homeSessionCopy,
-    `Today’s protocol is ${squatTraining.session.protocol.sets} sets of ${squatTraining.session.protocol.repsPerSet} reps with ${squatTraining.session.protocol.restSeconds} seconds of rest.`
+    `Today’s protocol is ${squatTraining.session.protocol.sets} sets of ${squatTraining.session.protocol.repsPerSet} reps with ${squatTraining.session.protocol.restSeconds} seconds of rest. Front camera capture is enabled by default on phones.`
   )
   setText(els.homeCoachName, squatTraining.coach.name)
   setText(els.homeCoachRole, squatTraining.coach.role)
@@ -247,7 +243,7 @@ function renderDetails(): void {
   setText(els.detailsCoachName, squatTraining.coach.name)
   setText(els.detailsCoachRole, squatTraining.coach.role)
   setText(els.detailsTitle, squatTraining.session.title)
-  setText(els.detailsSubtitle, squatTraining.session.subtitle)
+  setText(els.detailsSubtitle, `${squatTraining.session.subtitle} The live session starts with the phone front camera when available.`)
   setText(els.detailsSets, String(squatTraining.session.protocol.sets))
   setText(els.detailsReps, String(squatTraining.session.protocol.repsPerSet))
   setText(els.detailsRest, `${squatTraining.session.protocol.restSeconds}s`)
@@ -261,7 +257,10 @@ function renderDetails(): void {
     els.detailsFocusList.append(li)
   }
 
-  for (const item of squatTraining.session.techniqueTips) {
+  for (const item of [
+    'Phone front camera is requested first so you can keep the screen visible during setup.',
+    ...squatTraining.session.techniqueTips
+  ]) {
     const li = document.createElement('li')
     li.textContent = item
     els.detailsTips.append(li)
@@ -286,7 +285,7 @@ function renderProfile(): void {
   if (state.sessions.length === 0) {
     const empty = document.createElement('p')
     empty.className = 'history-empty'
-    empty.textContent = 'No sessions saved yet. Finish your first squat session to populate the profile.'
+    empty.textContent = 'No sessions saved yet. Finish your first squat session to populate the backend history.'
     els.historyList.append(empty)
     return
   }
@@ -376,14 +375,14 @@ function renderLiveSnapshot(snapshot: EngineSnapshot): void {
     setText(els.liveHeelValue, `${heelPercent.toFixed(1)}%`)
     setText(
       els.liveFeedback,
-      `Tracking ${snapshot.trackedSide ?? 'one'} side · depth ${snapshot.metrics.reachedDepth ? 'hit' : 'pending'} · overall posture ${formatPercent(snapshot.postureScore)}`
+      `Front camera active · tracking ${snapshot.trackedSide ?? 'one'} side · depth ${snapshot.metrics.reachedDepth ? 'hit' : 'pending'} · posture ${formatPercent(snapshot.postureScore)}`
     )
   } else {
     setText(els.liveKneeValue, '--')
     setText(els.liveHipValue, '--')
     setText(els.liveTorsoValue, '--')
     setText(els.liveHeelValue, '--')
-    setText(els.liveFeedback, 'Full body visibility is required before the coach starts counting reps.')
+    setText(els.liveFeedback, 'Front camera is live. Full body visibility is required before the coach starts counting reps.')
   }
 
   els.orientationChip.className = 'status-pill'
@@ -460,6 +459,7 @@ function handleEngineEvents(events: { key: string; message: string; interrupt?: 
 
 function syncCanvasToVideo(): void {
   if (els.cameraVideo.videoWidth === 0 || els.cameraVideo.videoHeight === 0) return
+
   if (
     els.cameraCanvas.width !== els.cameraVideo.videoWidth ||
     els.cameraCanvas.height !== els.cameraVideo.videoHeight
@@ -484,7 +484,6 @@ function drawPose(landmarks: PoseLandmark[] | undefined, trackedSide: 'left' | '
 
   const width = els.cameraCanvas.width
   const height = els.cameraCanvas.height
-
   context.clearRect(0, 0, width, height)
 
   if (!landmarks || landmarks.length === 0) return
@@ -566,9 +565,7 @@ async function handleSessionComplete(snapshot: EngineSnapshot): Promise<void> {
     )
   ).slice(0, 3)
 
-  const session: StoredSession = {
-    id: crypto.randomUUID(),
-    userEmail: state.activeUser.email,
+  const sessionPayload: SessionDraft = {
     completedAt: new Date().toISOString(),
     durationSeconds,
     totalReps: snapshot.totalReps,
@@ -581,10 +578,24 @@ async function handleSessionComplete(snapshot: EngineSnapshot): Promise<void> {
     repsPerSet: squatTraining.session.protocol.repsPerSet
   }
 
-  saveSession(session)
-  refreshUserData()
-  state.latestSession = session
-  renderResults(session)
+  try {
+    const savedSession = await saveSession(sessionPayload)
+    state.latestSession = savedSession
+    await refreshUserData()
+  } catch (error) {
+    const fallback: StoredSession = {
+      id: crypto.randomUUID(),
+      userEmail: state.activeUser.email,
+      ...sessionPayload
+    }
+    state.latestSession = fallback
+    window.alert(error instanceof Error ? error.message : 'The session could not be saved to the backend.')
+  }
+
+  if (state.latestSession) {
+    renderResults(state.latestSession)
+  }
+
   await stopLiveResources()
   setActiveScreen('results')
 }
@@ -600,7 +611,6 @@ async function handlePoseResults(results: PoseResults): Promise<void> {
   }
 
   const now = performance.now()
-
   const update =
     results.poseLandmarks && results.poseLandmarks.length > 0
       ? state.live.engine.processLandmarks(results.poseLandmarks as PoseLandmark[], now)
@@ -659,7 +669,7 @@ async function startLiveSession(): Promise<void> {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
-        facingMode: { ideal: 'environment' },
+        facingMode: { ideal: 'user' },
         width: { ideal: 720 },
         height: { ideal: 1280 }
       }
@@ -696,7 +706,7 @@ async function startLiveSession(): Promise<void> {
     renderLiveSnapshot(state.live.snapshot)
     voiceCoach.speak({
       key: 'welcome',
-      message: `Welcome, ${state.activeUser.name}. Today you will perform a squat training: 3 sets of 5 reps. Get into position.`,
+      message: `Welcome, ${state.activeUser.name}. Today you will perform a squat training: 3 sets of 5 reps. Front camera is live. Get into position.`,
       interrupt: true,
       minIntervalMs: 0
     })
@@ -707,7 +717,7 @@ async function startLiveSession(): Promise<void> {
     els.cameraError.textContent =
       error instanceof Error
         ? error.message
-        : 'Camera access failed. Use a secure localhost session and allow camera permission.'
+        : 'Camera access failed. Use a secure session and allow front camera permission.'
   }
 }
 
@@ -718,7 +728,7 @@ async function quitLiveSession(nextScreen: ScreenKey): Promise<void> {
   renderApp()
 }
 
-function handleAuthSubmit(event: SubmitEvent): void {
+async function handleAuthSubmit(event: SubmitEvent): Promise<void> {
   event.preventDefault()
 
   const email = els.authEmailInput.value.trim()
@@ -737,31 +747,41 @@ function handleAuthSubmit(event: SubmitEvent): void {
       return
     }
 
-    const result = registerUser(name, email, password)
+    const result = await registerUser(name, email, password)
     if (!result.ok) {
       showAuthError(result.message ?? 'Could not create the account.')
       return
     }
   } else {
-    const result = loginUser(email, password)
+    const result = await loginUser(email, password)
     if (!result.ok) {
       showAuthError(result.message ?? 'Could not log in.')
       return
     }
   }
 
-  refreshUserData()
+  await refreshUserData()
   els.authForm.reset()
   setActiveScreen('home')
   renderApp()
 }
 
-function bootstrap(): void {
-  refreshUserData()
+async function bootstrap(): Promise<void> {
   renderApp()
 
-  if (state.activeUser) {
-    setActiveScreen('home')
+  try {
+    await refreshUserData()
+    if (state.activeUser) {
+      setActiveScreen('home')
+    } else {
+      state.authMode = 'signup'
+      setActiveScreen('auth')
+    }
+  } catch (error) {
+    showAuthError(error instanceof Error ? error.message : 'Could not reach the backend.')
+    setActiveScreen('auth')
+  } finally {
+    state.bootstrapping = false
     renderApp()
   }
 
@@ -770,7 +790,9 @@ function bootstrap(): void {
     renderAuth()
   })
 
-  els.authForm.addEventListener('submit', (event) => handleAuthSubmit(event as SubmitEvent))
+  els.authForm.addEventListener('submit', (event) => {
+    void handleAuthSubmit(event as SubmitEvent)
+  })
 
   els.homeProfileBtn.addEventListener('click', () => {
     setActiveScreen('profile')
@@ -861,23 +883,31 @@ function bootstrap(): void {
     renderApp()
   })
 
-  els.resultsProfileBtn.addEventListener('click', () => {
+  els.resultsProfileBtn.addEventListener('click', async () => {
     state.latestSession = null
+    await refreshUserData()
     setActiveScreen('profile')
     renderApp()
   })
 
   els.logoutBtn.addEventListener('click', () => {
-    voiceCoach.stop()
-    logoutUser()
-    refreshUserData()
-    state.latestSession = null
-    state.authMode = 'login'
-    setActiveScreen('auth')
-    renderApp()
+    void (async () => {
+      voiceCoach.stop()
+      try {
+        await logoutUser()
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : 'Could not log out.')
+      }
+      state.activeUser = null
+      state.sessions = []
+      state.latestSession = null
+      state.authMode = 'login'
+      setActiveScreen('auth')
+      renderApp()
+    })()
   })
 
   window.addEventListener('resize', syncCanvasToVideo)
 }
 
-bootstrap()
+void bootstrap()
