@@ -96,6 +96,25 @@ export async function saveSession(session) {
     const payload = await readJson(response);
     return payload.session;
 }
+export async function recordPageVisit(visit, options = {}) {
+    const payload = JSON.stringify(visit);
+    if (options.useBeacon && typeof navigator !== 'undefined' && 'sendBeacon' in navigator) {
+        const blob = new Blob([payload], { type: 'application/json' });
+        if (navigator.sendBeacon('/api/analytics/page-visit', blob)) {
+            return;
+        }
+    }
+    const response = await requestJson('/api/analytics/page-visit', {
+        method: 'POST',
+        body: payload,
+        keepalive: options.useBeacon
+    });
+    if (response.status === 401)
+        return;
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response, 'Could not save page analytics.'));
+    }
+}
 export function getProfileStats(sessions) {
     if (sessions.length === 0) {
         return {

@@ -33,6 +33,16 @@ export interface SessionDraft {
   repsPerSet: number
 }
 
+export type TrackedPageName = 'home' | 'details' | 'live' | 'results' | 'profile'
+
+export interface PageVisitDraft {
+  pageName: TrackedPageName
+  enteredAt: string
+  exitedAt: string
+  durationMs: number
+  browserSessionId: string
+}
+
 export interface ProfileStats {
   totalSessions: number
   totalValidReps: number

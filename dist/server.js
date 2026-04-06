@@ -22,8 +22,12 @@ const quotedSchema = `"${databaseSchema}"`;
 const usersTable = `${quotedSchema}.users`;
 const authSessionsTable = `${quotedSchema}.auth_sessions`;
 const workoutSessionsTable = `${quotedSchema}.workout_sessions`;
+const pageVisitsTable = `${quotedSchema}.page_visits`;
 const sessionCookieName = 'noskip_session';
 const sessionTtlMs = 1000 * 60 * 60 * 24 * 30;
+const adminDashboardUsername = (process.env.ADMIN_DASHBOARD_USERNAME ?? 'admin').trim() || 'admin';
+const adminDashboardPassword = process.env.ADMIN_DASHBOARD_PASSWORD?.trim() ?? '';
+const trackedPageNames = ['home', 'details', 'live', 'results', 'profile'];
 if (!databaseUrl) {
     throw new Error('DATABASE_URL is required to start the Noskip server.');
 }
@@ -190,6 +194,603 @@ function parseSessionDraft(value) {
         repsPerSet: Math.max(1, Math.round(repsPerSet))
     };
 }
+function parsePageVisitDraft(value) {
+    if (!value || typeof value !== 'object')
+        return null;
+    const payload = value;
+    const pageName = typeof payload.pageName === 'string' ? payload.pageName : '';
+    const enteredAt = typeof payload.enteredAt === 'string' ? payload.enteredAt : '';
+    const exitedAt = typeof payload.exitedAt === 'string' ? payload.exitedAt : '';
+    const durationMs = typeof payload.durationMs === 'number' ? payload.durationMs : Number.NaN;
+    const browserSessionId = typeof payload.browserSessionId === 'string' ? payload.browserSessionId.trim() : '';
+    if (!trackedPageNames.includes(pageName))
+        return null;
+    if (browserSessionId.length < 8 || browserSessionId.length > 120)
+        return null;
+    if (Number.isNaN(Date.parse(enteredAt)) || Number.isNaN(Date.parse(exitedAt)))
+        return null;
+    if (!Number.isFinite(durationMs))
+        return null;
+    const enteredAtMs = Date.parse(enteredAt);
+    const exitedAtMs = Date.parse(exitedAt);
+    if (exitedAtMs < enteredAtMs)
+        return null;
+    const roundedDurationMs = Math.round(durationMs);
+    if (roundedDurationMs < 0 || roundedDurationMs > 1000 * 60 * 60 * 12)
+        return null;
+    const observedDurationMs = exitedAtMs - enteredAtMs;
+    if (roundedDurationMs > observedDurationMs + 1000 * 60 * 5)
+        return null;
+    return {
+        pageName: pageName,
+        enteredAt,
+        exitedAt,
+        durationMs: roundedDurationMs,
+        browserSessionId
+    };
+}
+function safeEqualText(left, right) {
+    const leftBuffer = Buffer.from(left);
+    const rightBuffer = Buffer.from(right);
+    if (leftBuffer.length !== rightBuffer.length)
+        return false;
+    return timingSafeEqual(leftBuffer, rightBuffer);
+}
+function parseBasicAuthHeader(header) {
+    if (!header?.startsWith('Basic '))
+        return null;
+    try {
+        const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+        const separatorIndex = decoded.indexOf(':');
+        if (separatorIndex < 0)
+            return null;
+        return {
+            username: decoded.slice(0, separatorIndex),
+            password: decoded.slice(separatorIndex + 1)
+        };
+    }
+    catch {
+        return null;
+    }
+}
+function requireDashboardAuth(request, response) {
+    if (adminDashboardPassword === '') {
+        response.status(404).type('text/plain').send('Dashboard not configured.');
+        return false;
+    }
+    const credentials = parseBasicAuthHeader(request.headers.authorization);
+    const authorized = credentials !== null &&
+        safeEqualText(credentials.username, adminDashboardUsername) &&
+        safeEqualText(credentials.password, adminDashboardPassword);
+    if (!authorized) {
+        response.setHeader('WWW-Authenticate', 'Basic realm="Noskip dashboard"');
+        response.status(401).type('text/plain').send('Authentication required.');
+        return false;
+    }
+    return true;
+}
+function escapeHtml(value) {
+    return value
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+function humanizePageName(value) {
+    return value.charAt(0).toUpperCase() + value.slice(1);
+}
+function formatDateTime(value) {
+    if (!value)
+        return 'Never';
+    const date = typeof value === 'string' ? new Date(value) : value;
+    return new Intl.DateTimeFormat('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit'
+    }).format(date);
+}
+function formatDuration(seconds) {
+    if (seconds <= 0)
+        return '0m';
+    if (seconds < 60) {
+        return `${seconds}s`;
+    }
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (hours === 0) {
+        return `${minutes}m`;
+    }
+    return `${hours}h ${minutes}m`;
+}
+async function loadDashboardData() {
+    const [summaryResult, pageMetricsResult, userMetricsResult, recentWorkoutsResult] = await Promise.all([
+        pool.query(`
+      select
+        (select count(*)::int from ${usersTable}) as total_users,
+        (select count(distinct user_id)::int from ${workoutSessionsTable}) as users_with_workouts,
+        (
+          select count(*)::int
+          from (
+            select user_id from ${pageVisitsTable} where exited_at >= now() - interval '7 days'
+            union
+            select user_id from ${workoutSessionsTable} where completed_at >= now() - interval '7 days'
+          ) as active_users
+        ) as active_users_7d,
+        (select count(*)::int from ${workoutSessionsTable}) as total_workouts,
+        (select coalesce(sum(duration_seconds), 0)::int from ${workoutSessionsTable}) as total_workout_seconds,
+        (select coalesce(round(sum(duration_ms) / 1000.0), 0)::int from ${pageVisitsTable}) as total_tracked_seconds
+    `),
+        pool.query(`
+      select
+        page_name,
+        count(*)::int as views,
+        count(distinct user_id)::int as unique_users,
+        coalesce(round(avg(duration_ms) / 1000.0), 0)::int as avg_duration_seconds,
+        coalesce(round(sum(duration_ms) / 1000.0), 0)::int as total_duration_seconds
+      from ${pageVisitsTable}
+      group by page_name
+      order by total_duration_seconds desc, page_name asc
+    `),
+        pool.query(`
+      with workout_stats as (
+        select
+          user_id,
+          count(*)::int as total_sessions,
+          coalesce(sum(duration_seconds), 0)::int as workout_duration_seconds,
+          coalesce(round(avg(depth_score)), 0)::int as avg_depth_score,
+          coalesce(round(avg(posture_score)), 0)::int as avg_posture_score,
+          max(completed_at) as last_workout_at
+        from ${workoutSessionsTable}
+        group by user_id
+      ),
+      visit_stats as (
+        select
+          user_id,
+          count(*)::int as total_page_views,
+          coalesce(round(sum(duration_ms) / 1000.0), 0)::int as app_duration_seconds,
+          max(exited_at) as last_seen_at
+        from ${pageVisitsTable}
+        group by user_id
+      )
+      select
+        users.id,
+        users.name,
+        users.email,
+        users.created_at,
+        greatest(
+          users.created_at,
+          coalesce(visit_stats.last_seen_at, users.created_at),
+          coalesce(workout_stats.last_workout_at, users.created_at)
+        ) as last_seen_at,
+        workout_stats.last_workout_at,
+        coalesce(workout_stats.total_sessions, 0)::int as total_sessions,
+        coalesce(workout_stats.workout_duration_seconds, 0)::int as workout_duration_seconds,
+        coalesce(workout_stats.avg_depth_score, 0)::int as avg_depth_score,
+        coalesce(workout_stats.avg_posture_score, 0)::int as avg_posture_score,
+        coalesce(visit_stats.total_page_views, 0)::int as total_page_views,
+        coalesce(visit_stats.app_duration_seconds, 0)::int as app_duration_seconds,
+        favorite_page.favorite_page
+      from ${usersTable} as users
+      left join workout_stats on workout_stats.user_id = users.id
+      left join visit_stats on visit_stats.user_id = users.id
+      left join lateral (
+        select page_name as favorite_page
+        from ${pageVisitsTable}
+        where user_id = users.id
+        group by page_name
+        order by sum(duration_ms) desc, page_name asc
+        limit 1
+      ) as favorite_page on true
+      order by last_seen_at desc, users.created_at desc
+    `),
+        pool.query(`
+      select
+        workout_sessions.id,
+        users.name,
+        users.email,
+        workout_sessions.completed_at,
+        workout_sessions.duration_seconds,
+        workout_sessions.total_reps,
+        workout_sessions.valid_reps,
+        workout_sessions.depth_score,
+        workout_sessions.posture_score
+      from ${workoutSessionsTable} as workout_sessions
+      inner join ${usersTable} as users on users.id = workout_sessions.user_id
+      order by workout_sessions.completed_at desc
+      limit 18
+    `)
+    ]);
+    return {
+        summary: summaryResult.rows[0] ?? {
+            total_users: 0,
+            users_with_workouts: 0,
+            active_users_7d: 0,
+            total_workouts: 0,
+            total_workout_seconds: 0,
+            total_tracked_seconds: 0
+        },
+        pageMetrics: pageMetricsResult.rows,
+        userMetrics: userMetricsResult.rows,
+        recentWorkouts: recentWorkoutsResult.rows
+    };
+}
+function renderDashboardHtml(data) {
+    const pageMetricsMarkup = data.pageMetrics.length === 0
+        ? `
+          <tr>
+            <td colspan="5" class="empty-row">No page analytics yet. Screen-time tracking starts after this dashboard release.</td>
+          </tr>
+        `
+        : data.pageMetrics
+            .map((row) => `
+              <tr>
+                <td>${escapeHtml(humanizePageName(row.page_name))}</td>
+                <td>${row.views}</td>
+                <td>${row.unique_users}</td>
+                <td>${escapeHtml(formatDuration(row.avg_duration_seconds))}</td>
+                <td>${escapeHtml(formatDuration(row.total_duration_seconds))}</td>
+              </tr>
+            `)
+            .join('');
+    const userMetricsMarkup = data.userMetrics.length === 0
+        ? `
+          <tr>
+            <td colspan="9" class="empty-row">No users found in the database yet.</td>
+          </tr>
+        `
+        : data.userMetrics
+            .map((row) => `
+              <tr>
+                <td>
+                  <strong>${escapeHtml(row.name)}</strong>
+                  <div class="subtle">${escapeHtml(row.email)}</div>
+                </td>
+                <td>${escapeHtml(formatDateTime(row.created_at))}</td>
+                <td>${escapeHtml(formatDateTime(row.last_seen_at))}</td>
+                <td>${row.total_sessions}</td>
+                <td>${escapeHtml(formatDuration(row.workout_duration_seconds))}</td>
+                <td>${escapeHtml(formatDuration(row.app_duration_seconds))}</td>
+                <td>${row.avg_depth_score}%</td>
+                <td>${row.avg_posture_score}%</td>
+                <td>${escapeHtml(row.favorite_page ? humanizePageName(row.favorite_page) : 'None')}</td>
+              </tr>
+            `)
+            .join('');
+    const recentWorkoutsMarkup = data.recentWorkouts.length === 0
+        ? `
+          <tr>
+            <td colspan="6" class="empty-row">No workouts have been saved yet.</td>
+          </tr>
+        `
+        : data.recentWorkouts
+            .map((row) => `
+              <tr>
+                <td>
+                  <strong>${escapeHtml(row.name)}</strong>
+                  <div class="subtle">${escapeHtml(row.email)}</div>
+                </td>
+                <td>${escapeHtml(formatDateTime(row.completed_at))}</td>
+                <td>${row.valid_reps}/${row.total_reps}</td>
+                <td>${escapeHtml(formatDuration(row.duration_seconds))}</td>
+                <td>${row.depth_score}%</td>
+                <td>${row.posture_score}%</td>
+              </tr>
+            `)
+            .join('');
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noskip Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08131d;
+      --panel: rgba(10, 24, 37, 0.88);
+      --panel-border: rgba(125, 173, 204, 0.16);
+      --text: #eff7fb;
+      --muted: #9fb8c9;
+      --accent: #7ce2ff;
+      --accent-strong: #34c5ff;
+      --warm: #ffbf75;
+      --shadow: 0 24px 48px rgba(2, 11, 18, 0.38);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: 'Manrope', sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(52, 197, 255, 0.18), transparent 24%),
+        radial-gradient(circle at top right, rgba(255, 191, 117, 0.16), transparent 26%),
+        linear-gradient(180deg, #0c1a28 0%, var(--bg) 58%, #040a10 100%);
+      color: var(--text);
+      padding: 28px;
+    }
+
+    .shell {
+      width: min(1260px, 100%);
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero, .panel {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+
+    .hero {
+      padding: 28px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .eyebrow {
+      margin: 0;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 800;
+    }
+
+    h1, h2 {
+      margin: 0;
+      font-family: 'Sora', sans-serif;
+      letter-spacing: -0.03em;
+    }
+
+    .hero-copy, .subtle {
+      color: var(--muted);
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+    }
+
+    .metric {
+      padding: 18px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      display: grid;
+      gap: 8px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .metric strong {
+      font-size: 28px;
+      font-family: 'Sora', sans-serif;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr;
+      gap: 18px;
+    }
+
+    .panel {
+      padding: 20px;
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: end;
+      margin-bottom: 14px;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 18px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 640px;
+      background: rgba(0, 0, 0, 0.12);
+    }
+
+    th, td {
+      padding: 14px 16px;
+      text-align: left;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 14px;
+      vertical-align: top;
+    }
+
+    th {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .pill {
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: rgba(124, 226, 255, 0.1);
+      color: var(--text);
+      font-size: 13px;
+      border: 1px solid rgba(124, 226, 255, 0.16);
+    }
+
+    .empty-row {
+      color: var(--muted);
+    }
+
+    .refresh {
+      color: var(--warm);
+      text-decoration: none;
+      font-weight: 700;
+    }
+
+    @media (max-width: 980px) {
+      body { padding: 16px; }
+      .grid { grid-template-columns: 1fr; }
+      .hero, .panel { border-radius: 20px; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 640px) {
+      .summary-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <p class="eyebrow">Protected dashboard</p>
+      <h1>Noskip product and database overview</h1>
+      <p class="hero-copy">
+        Live snapshot of the Fly PostgreSQL data: users, workout history, tracked in-app screen time, and recent product activity.
+      </p>
+      <div class="pill-row">
+        <span class="pill">Schema ${escapeHtml(databaseSchema)}</span>
+        <span class="pill">Updated ${escapeHtml(formatDateTime(new Date()))}</span>
+        <a class="refresh" href="/dashboard">Refresh</a>
+      </div>
+    </section>
+
+    <section class="summary-grid">
+      <article class="metric">
+        <span>Total users</span>
+        <strong>${data.summary.total_users}</strong>
+      </article>
+      <article class="metric">
+        <span>Active users (7d)</span>
+        <strong>${data.summary.active_users_7d}</strong>
+      </article>
+      <article class="metric">
+        <span>Users with workouts</span>
+        <strong>${data.summary.users_with_workouts}</strong>
+      </article>
+      <article class="metric">
+        <span>Total workouts</span>
+        <strong>${data.summary.total_workouts}</strong>
+      </article>
+      <article class="metric">
+        <span>Workout time logged</span>
+        <strong>${escapeHtml(formatDuration(data.summary.total_workout_seconds))}</strong>
+      </article>
+      <article class="metric">
+        <span>Tracked page time</span>
+        <strong>${escapeHtml(formatDuration(data.summary.total_tracked_seconds))}</strong>
+      </article>
+    </section>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Engagement</p>
+            <h2>Page time by screen</h2>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Page</th>
+                <th>Views</th>
+                <th>Unique users</th>
+                <th>Avg time</th>
+                <th>Total time</th>
+              </tr>
+            </thead>
+            <tbody>${pageMetricsMarkup}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Recent activity</p>
+            <h2>Latest workouts</h2>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Completed</th>
+                <th>Valid reps</th>
+                <th>Duration</th>
+                <th>Depth</th>
+                <th>Posture</th>
+              </tr>
+            </thead>
+            <tbody>${recentWorkoutsMarkup}</tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">People</p>
+          <h2>Users and retention signals</h2>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Joined</th>
+              <th>Last seen</th>
+              <th>Workouts</th>
+              <th>Workout time</th>
+              <th>App time</th>
+              <th>Avg depth</th>
+              <th>Avg posture</th>
+              <th>Top page</th>
+            </tr>
+          </thead>
+          <tbody>${userMetricsMarkup}</tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</body>
+</html>`;
+}
 async function ensureSchema() {
     await pool.query(`
     create schema if not exists ${quotedSchema};
@@ -227,10 +828,26 @@ async function ensureSchema() {
       created_at timestamptz not null default now()
     );
 
+    create table if not exists ${pageVisitsTable} (
+      id text primary key,
+      user_id text not null references ${usersTable}(id) on delete cascade,
+      user_email text not null,
+      browser_session_id text not null,
+      page_name text not null,
+      entered_at timestamptz not null,
+      exited_at timestamptz not null,
+      duration_ms integer not null check (duration_ms >= 0),
+      created_at timestamptz not null default now()
+    );
+
     create index if not exists ${databaseSchema}_auth_sessions_user_id_idx on ${authSessionsTable} (user_id);
     create index if not exists ${databaseSchema}_auth_sessions_expires_at_idx on ${authSessionsTable} (expires_at);
     create index if not exists ${databaseSchema}_workout_sessions_user_id_completed_idx
       on ${workoutSessionsTable} (user_id, completed_at desc);
+    create index if not exists ${databaseSchema}_page_visits_user_id_exited_idx
+      on ${pageVisitsTable} (user_id, exited_at desc);
+    create index if not exists ${databaseSchema}_page_visits_page_name_exited_idx
+      on ${pageVisitsTable} (page_name, exited_at desc);
   `);
     await pool.query(`delete from ${authSessionsTable} where expires_at <= now()`);
 }
@@ -340,6 +957,38 @@ app.post('/api/auth/logout', asyncHandler(async (request, response) => {
     clearSessionCookie(response);
     response.json({ ok: true });
 }));
+app.post('/api/analytics/page-visit', loadAuthUser, asyncHandler(async (request, response) => {
+    if (!requireAuth(request, response))
+        return;
+    const authRequest = request;
+    const authUser = authRequest.authUser;
+    const authUserId = authRequest.authUserId;
+    if (!authUser || !authUserId) {
+        response.status(401).json({ message: 'Authentication required.' });
+        return;
+    }
+    const pageVisit = parsePageVisitDraft(request.body);
+    if (!pageVisit) {
+        response.status(400).json({ message: 'Page visit payload is invalid.' });
+        return;
+    }
+    await pool.query(`
+        insert into ${pageVisitsTable} (
+          id, user_id, user_email, browser_session_id, page_name, entered_at, exited_at, duration_ms
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+      `, [
+        randomUUID(),
+        authUserId,
+        authUser.email,
+        pageVisit.browserSessionId,
+        pageVisit.pageName,
+        pageVisit.enteredAt,
+        pageVisit.exitedAt,
+        pageVisit.durationMs
+    ]);
+    response.status(201).json({ ok: true });
+}));
 app.get('/api/history', loadAuthUser, asyncHandler(async (request, response) => {
     if (!requireAuth(request, response))
         return;
@@ -401,6 +1050,12 @@ app.post('/api/history', loadAuthUser, asyncHandler(async (request, response) =>
         sessionDraft.repsPerSet
     ]);
     response.status(201).json({ session: toStoredSession(result.rows[0]) });
+}));
+app.get('/dashboard', asyncHandler(async (request, response) => {
+    if (!requireDashboardAuth(request, response))
+        return;
+    const dashboardData = await loadDashboardData();
+    response.type('html').send(renderDashboardHtml(dashboardData));
 }));
 app.use('/dist', express.static(distDir, { maxAge: '1h', immutable: false, index: false }));
 app.use('/assets', express.static(assetsDir, { maxAge: '1h', immutable: false, index: false }));

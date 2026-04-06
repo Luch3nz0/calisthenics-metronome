@@ -5,8 +5,10 @@ import {
   getSessionsForUser,
   loginUser,
   logoutUser,
+  recordPageVisit,
   registerUser,
   saveSession,
+  type PageVisitDraft,
   type StoredSession,
   type AuthUser,
   type SessionDraft
@@ -15,7 +17,13 @@ import { SquatSessionEngine, type EngineSnapshot, type PoseLandmark } from './sq
 import { VoiceCoach } from './voice-coach.js'
 
 type ScreenKey = 'auth' | 'home' | 'details' | 'live' | 'results' | 'profile'
+type TrackedScreenKey = Exclude<ScreenKey, 'auth'>
 type AuthMode = 'signup' | 'login'
+type ActivePageVisit = {
+  screen: TrackedScreenKey
+  enteredAt: string
+  startedAtMs: number
+}
 
 type LiveState = {
   engine: SquatSessionEngine | null
@@ -31,6 +39,21 @@ type LiveState = {
   completionHandled: boolean
 }
 
+function loadBrowserSessionId(): string {
+  const storageKey = 'noskip_browser_session_id'
+
+  try {
+    const existing = window.sessionStorage.getItem(storageKey)?.trim()
+    if (existing) return existing
+
+    const next = window.crypto.randomUUID()
+    window.sessionStorage.setItem(storageKey, next)
+    return next
+  } catch {
+    return `browser-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  }
+}
+
 const voiceCoach = new VoiceCoach()
 
 const state: {
@@ -41,6 +64,10 @@ const state: {
   latestSession: StoredSession | null
   bootstrapping: boolean
   live: LiveState
+  analytics: {
+    currentVisit: ActivePageVisit | null
+    browserSessionId: string
+  }
 } = {
   screen: 'auth',
   authMode: 'signup',
@@ -60,6 +87,10 @@ const state: {
     pausedDurationMs: 0,
     snapshot: null,
     completionHandled: false
+  },
+  analytics: {
+    currentVisit: null,
+    browserSessionId: loadBrowserSessionId()
   }
 }
 
@@ -162,10 +193,71 @@ function formatDate(value: string): string {
 async function refreshUserData(): Promise<void> {
   state.activeUser = await getActiveUser()
   state.sessions = state.activeUser ? await getSessionsForUser() : []
+
+  if (!state.activeUser) {
+    state.analytics.currentVisit = null
+  }
+}
+
+function isTrackedScreen(screen: ScreenKey): screen is TrackedScreenKey {
+  return screen !== 'auth'
+}
+
+function startTrackedScreenVisit(screen: TrackedScreenKey): void {
+  state.analytics.currentVisit = {
+    screen,
+    enteredAt: new Date().toISOString(),
+    startedAtMs: performance.now()
+  }
+}
+
+function resumeTrackedScreenVisit(): void {
+  if (!state.activeUser || !isTrackedScreen(state.screen) || document.visibilityState === 'hidden') {
+    return
+  }
+
+  if (!state.analytics.currentVisit || state.analytics.currentVisit.screen !== state.screen) {
+    startTrackedScreenVisit(state.screen)
+  }
+}
+
+async function flushTrackedScreenVisit(useBeacon = false): Promise<void> {
+  const currentVisit = state.analytics.currentVisit
+
+  if (!currentVisit || !state.activeUser) {
+    state.analytics.currentVisit = null
+    return
+  }
+
+  state.analytics.currentVisit = null
+
+  const payload: PageVisitDraft = {
+    pageName: currentVisit.screen,
+    enteredAt: currentVisit.enteredAt,
+    exitedAt: new Date().toISOString(),
+    durationMs: Math.max(250, Math.round(performance.now() - currentVisit.startedAtMs)),
+    browserSessionId: state.analytics.browserSessionId
+  }
+
+  try {
+    await recordPageVisit(payload, { useBeacon })
+  } catch (error) {
+    console.error('Could not record page visit', error)
+  }
 }
 
 function setActiveScreen(screen: ScreenKey): void {
+  if (screen !== state.screen) {
+    void flushTrackedScreenVisit()
+  }
+
   state.screen = screen
+
+  if (!state.activeUser || !isTrackedScreen(screen)) {
+    state.analytics.currentVisit = null
+  } else if (!state.analytics.currentVisit || state.analytics.currentVisit.screen !== screen) {
+    startTrackedScreenVisit(screen)
+  }
 
   for (const panel of els.screens) {
     panel.hidden = panel.dataset.screen !== screen
@@ -834,6 +926,7 @@ async function bootstrap(): Promise<void> {
     void (async () => {
       voiceCoach.stop()
       try {
+        await flushTrackedScreenVisit(true)
         await logoutUser()
       } catch (error) {
         window.alert(error instanceof Error ? error.message : 'Could not log out.')
@@ -848,6 +941,17 @@ async function bootstrap(): Promise<void> {
   })
 
   window.addEventListener('resize', syncCanvasToVideo)
+  window.addEventListener('pagehide', () => {
+    void flushTrackedScreenVisit(true)
+  })
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      void flushTrackedScreenVisit(true)
+      return
+    }
+
+    resumeTrackedScreenVisit()
+  })
 }
 
 void bootstrap()

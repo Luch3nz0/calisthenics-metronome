@@ -1,7 +1,21 @@
 import { squatTraining } from './session-data.js';
-import { getActiveUser, getProfileStats, getSessionsForUser, loginUser, logoutUser, registerUser, saveSession } from './storage.js';
+import { getActiveUser, getProfileStats, getSessionsForUser, loginUser, logoutUser, recordPageVisit, registerUser, saveSession } from './storage.js';
 import { SquatSessionEngine } from './squat-engine.js';
 import { VoiceCoach } from './voice-coach.js';
+function loadBrowserSessionId() {
+    const storageKey = 'noskip_browser_session_id';
+    try {
+        const existing = window.sessionStorage.getItem(storageKey)?.trim();
+        if (existing)
+            return existing;
+        const next = window.crypto.randomUUID();
+        window.sessionStorage.setItem(storageKey, next);
+        return next;
+    }
+    catch {
+        return `browser-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+}
 const voiceCoach = new VoiceCoach();
 const state = {
     screen: 'auth',
@@ -22,6 +36,10 @@ const state = {
         pausedDurationMs: 0,
         snapshot: null,
         completionHandled: false
+    },
+    analytics: {
+        currentVisit: null,
+        browserSessionId: loadBrowserSessionId()
     }
 };
 function byId(id) {
@@ -119,9 +137,60 @@ function formatDate(value) {
 async function refreshUserData() {
     state.activeUser = await getActiveUser();
     state.sessions = state.activeUser ? await getSessionsForUser() : [];
+    if (!state.activeUser) {
+        state.analytics.currentVisit = null;
+    }
+}
+function isTrackedScreen(screen) {
+    return screen !== 'auth';
+}
+function startTrackedScreenVisit(screen) {
+    state.analytics.currentVisit = {
+        screen,
+        enteredAt: new Date().toISOString(),
+        startedAtMs: performance.now()
+    };
+}
+function resumeTrackedScreenVisit() {
+    if (!state.activeUser || !isTrackedScreen(state.screen) || document.visibilityState === 'hidden') {
+        return;
+    }
+    if (!state.analytics.currentVisit || state.analytics.currentVisit.screen !== state.screen) {
+        startTrackedScreenVisit(state.screen);
+    }
+}
+async function flushTrackedScreenVisit(useBeacon = false) {
+    const currentVisit = state.analytics.currentVisit;
+    if (!currentVisit || !state.activeUser) {
+        state.analytics.currentVisit = null;
+        return;
+    }
+    state.analytics.currentVisit = null;
+    const payload = {
+        pageName: currentVisit.screen,
+        enteredAt: currentVisit.enteredAt,
+        exitedAt: new Date().toISOString(),
+        durationMs: Math.max(250, Math.round(performance.now() - currentVisit.startedAtMs)),
+        browserSessionId: state.analytics.browserSessionId
+    };
+    try {
+        await recordPageVisit(payload, { useBeacon });
+    }
+    catch (error) {
+        console.error('Could not record page visit', error);
+    }
 }
 function setActiveScreen(screen) {
+    if (screen !== state.screen) {
+        void flushTrackedScreenVisit();
+    }
     state.screen = screen;
+    if (!state.activeUser || !isTrackedScreen(screen)) {
+        state.analytics.currentVisit = null;
+    }
+    else if (!state.analytics.currentVisit || state.analytics.currentVisit.screen !== screen) {
+        startTrackedScreenVisit(screen);
+    }
     for (const panel of els.screens) {
         panel.hidden = panel.dataset.screen !== screen;
     }
@@ -684,6 +753,7 @@ async function bootstrap() {
         void (async () => {
             voiceCoach.stop();
             try {
+                await flushTrackedScreenVisit(true);
                 await logoutUser();
             }
             catch (error) {
@@ -698,5 +768,15 @@ async function bootstrap() {
         })();
     });
     window.addEventListener('resize', syncCanvasToVideo);
+    window.addEventListener('pagehide', () => {
+        void flushTrackedScreenVisit(true);
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            void flushTrackedScreenVisit(true);
+            return;
+        }
+        resumeTrackedScreenVisit();
+    });
 }
 void bootstrap();

@@ -1,6 +1,6 @@
-import type { AuthUser, ProfileStats, SessionDraft, StoredSession } from './shared-types.js'
+import type { AuthUser, PageVisitDraft, ProfileStats, SessionDraft, StoredSession } from './shared-types.js'
 
-export type { AuthUser, ProfileStats, SessionDraft, StoredSession } from './shared-types.js'
+export type { AuthUser, PageVisitDraft, ProfileStats, SessionDraft, StoredSession } from './shared-types.js'
 
 type ApiErrorPayload = {
   message?: string
@@ -22,6 +22,10 @@ type HistoryResponse = {
 
 type SaveSessionResponse = {
   session: StoredSession
+}
+
+type OkResponse = {
+  ok: boolean
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -149,6 +153,31 @@ export async function saveSession(session: SessionDraft): Promise<StoredSession>
 
   const payload = await readJson<SaveSessionResponse>(response)
   return payload.session
+}
+
+export async function recordPageVisit(
+  visit: PageVisitDraft,
+  options: { useBeacon?: boolean } = {}
+): Promise<void> {
+  const payload = JSON.stringify(visit)
+
+  if (options.useBeacon && typeof navigator !== 'undefined' && 'sendBeacon' in navigator) {
+    const blob = new Blob([payload], { type: 'application/json' })
+    if (navigator.sendBeacon('/api/analytics/page-visit', blob)) {
+      return
+    }
+  }
+
+  const response = await requestJson<OkResponse>('/api/analytics/page-visit', {
+    method: 'POST',
+    body: payload,
+    keepalive: options.useBeacon
+  })
+
+  if (response.status === 401) return
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Could not save page analytics.'))
+  }
 }
 
 export function getProfileStats(sessions: StoredSession[]): ProfileStats {
