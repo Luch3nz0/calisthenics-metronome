@@ -1,9 +1,10 @@
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { randomBytes, randomUUID, createHash, timingSafeEqual, scrypt as scryptCallback } from 'node:crypto'
-import { promisify } from 'node:util'
+import { mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Pool } from 'pg'
+import { promisify } from 'node:util'
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import type { AuthUser, PageVisitDraft, SessionDraft, StoredSession, TrackedPageName } from './shared-types.js'
 
 const scrypt = promisify(scryptCallback)
@@ -13,57 +14,37 @@ const distDir = join(rootDir, 'dist')
 const assetsDir = join(rootDir, 'assets')
 
 const port = Number(process.env.PORT ?? 8080)
-const databaseUrl = process.env.DATABASE_URL
-const databaseSchema = (() => {
-  const value = (process.env.DATABASE_SCHEMA ?? 'noskip').trim()
-
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
-    throw new Error('DATABASE_SCHEMA must be a valid PostgreSQL identifier.')
-  }
-
-  return value
-})()
-const quotedSchema = `"${databaseSchema}"`
-const usersTable = `${quotedSchema}.users`
-const authSessionsTable = `${quotedSchema}.auth_sessions`
-const workoutSessionsTable = `${quotedSchema}.workout_sessions`
-const pageVisitsTable = `${quotedSchema}.page_visits`
+const databasePath = resolve(process.env.DATABASE_PATH ?? join(rootDir, '.data', 'noskip.sqlite'))
+const databaseDir = dirname(databasePath)
 const sessionCookieName = 'noskip_session'
 const sessionTtlMs = 1000 * 60 * 60 * 24 * 30
 const adminDashboardUsername = (process.env.ADMIN_DASHBOARD_USERNAME ?? 'admin').trim() || 'admin'
 const adminDashboardPassword = process.env.ADMIN_DASHBOARD_PASSWORD?.trim() ?? ''
 const trackedPageNames: readonly TrackedPageName[] = ['home', 'details', 'live', 'results', 'profile']
 
-if (!databaseUrl) {
-  throw new Error('DATABASE_URL is required to start the Noskip server.')
-}
-
-const pool = new Pool({
-  connectionString: databaseUrl,
-  max: 10
-})
-
 type DatabaseUserRow = {
   id: string
   name: string
   email: string
-  created_at: Date
+  created_at: string
   password_hash?: string
 }
 
-type DatabaseSessionRow = {
+type DatabaseWorkoutSessionRow = {
   id: string
+  user_id: string
   user_email: string
-  completed_at: Date
+  completed_at: string
   duration_seconds: number
   total_reps: number
   valid_reps: number
   invalid_reps: number
   depth_score: number
   posture_score: number
-  notes: unknown
+  notes: string
   total_sets: number
   reps_per_set: number
+  created_at: string
 }
 
 type DatabasePageVisitRow = {
@@ -72,9 +53,18 @@ type DatabasePageVisitRow = {
   user_email: string
   browser_session_id: string
   page_name: TrackedPageName
-  entered_at: Date
-  exited_at: Date
+  entered_at: string
+  exited_at: string
   duration_ms: number
+  created_at: string
+}
+
+type DatabaseAuthSessionRow = {
+  user_id: string
+  id: string
+  name: string
+  email: string
+  created_at: string
 }
 
 type DashboardSummaryRow = {
@@ -98,9 +88,9 @@ type DashboardUserMetricRow = {
   id: string
   name: string
   email: string
-  created_at: Date
-  last_seen_at: Date
-  last_workout_at: Date | null
+  created_at: string
+  last_seen_at: string
+  last_workout_at: string | null
   total_sessions: number
   workout_duration_seconds: number
   avg_depth_score: number
@@ -114,7 +104,7 @@ type DashboardRecentWorkoutRow = {
   id: string
   name: string
   email: string
-  completed_at: Date
+  completed_at: string
   duration_seconds: number
   total_reps: number
   valid_reps: number
@@ -127,6 +117,26 @@ type AuthenticatedRequest = Request & {
   authUserId?: string
 }
 
+mkdirSync(databaseDir, { recursive: true })
+
+const db = new DatabaseSync(databasePath)
+
+function exec(sql: string): void {
+  db.exec(sql)
+}
+
+function run(sql: string, params: readonly SQLInputValue[] = []): void {
+  db.prepare(sql).run(...params)
+}
+
+function get<T>(sql: string, params: readonly SQLInputValue[] = []): T | undefined {
+  return db.prepare(sql).get(...params) as T | undefined
+}
+
+function all<T>(sql: string, params: readonly SQLInputValue[] = []): T[] {
+  return db.prepare(sql).all(...params) as T[]
+}
+
 function toAuthUser(row: DatabaseUserRow): AuthUser {
   return {
     id: row.id,
@@ -136,7 +146,16 @@ function toAuthUser(row: DatabaseUserRow): AuthUser {
   }
 }
 
-function toStoredSession(row: DatabaseSessionRow): StoredSession {
+function parseNotesJson(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)) : []
+  } catch {
+    return []
+  }
+}
+
+function toStoredSession(row: DatabaseWorkoutSessionRow): StoredSession {
   return {
     id: row.id,
     userEmail: row.user_email,
@@ -147,7 +166,7 @@ function toStoredSession(row: DatabaseSessionRow): StoredSession {
     invalidReps: row.invalid_reps,
     depthScore: row.depth_score,
     postureScore: row.posture_score,
-    notes: Array.isArray(row.notes) ? row.notes.map(String) : [],
+    notes: parseNotesJson(row.notes),
     totalSets: row.total_sets,
     repsPerSet: row.reps_per_set
   }
@@ -195,47 +214,57 @@ function hashSessionToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
 
+function nowIso(): string {
+  return new Date().toISOString()
+}
+
+function cleanupExpiredSessions(): void {
+  run(`delete from auth_sessions where expires_at <= ?`, [nowIso()])
+}
+
 async function createAuthSession(userId: string): Promise<string> {
   const token = randomBytes(32).toString('base64url')
-  const expiresAt = new Date(Date.now() + sessionTtlMs)
+  const createdAt = nowIso()
+  const expiresAt = new Date(Date.now() + sessionTtlMs).toISOString()
 
-  await pool.query(
+  run(
     `
-      insert into ${authSessionsTable} (id, user_id, token_hash, expires_at)
-      values ($1, $2, $3, $4)
+      insert into auth_sessions (id, user_id, token_hash, expires_at, created_at)
+      values (?, ?, ?, ?, ?)
     `,
-    [randomUUID(), userId, hashSessionToken(token), expiresAt.toISOString()]
+    [randomUUID(), userId, hashSessionToken(token), expiresAt, createdAt]
   )
 
   return token
 }
 
-async function destroyAuthSession(token: string | null): Promise<void> {
+function destroyAuthSession(token: string | null): void {
   if (!token) return
-  await pool.query(`delete from ${authSessionsTable} where token_hash = $1`, [hashSessionToken(token)])
+  run(`delete from auth_sessions where token_hash = ?`, [hashSessionToken(token)])
 }
 
-async function findSessionUser(token: string | null): Promise<{ user: AuthUser; userId: string } | null> {
+function findSessionUser(token: string | null): { user: AuthUser; userId: string } | null {
   if (!token) return null
 
-  const result = await pool.query<DatabaseUserRow & { session_user_id: string }>(
+  cleanupExpiredSessions()
+
+  const row = get<DatabaseAuthSessionRow>(
     `
-      select users.id, users.name, users.email, users.created_at, auth_sessions.user_id as session_user_id
-      from ${authSessionsTable} as auth_sessions
-      inner join ${usersTable} as users on users.id = auth_sessions.user_id
-      where auth_sessions.token_hash = $1
-        and auth_sessions.expires_at > now()
+      select users.id, auth_sessions.user_id, users.name, users.email, users.created_at
+      from auth_sessions
+      inner join users on users.id = auth_sessions.user_id
+      where auth_sessions.token_hash = ?
+        and auth_sessions.expires_at > ?
       limit 1
     `,
-    [hashSessionToken(token)]
+    [hashSessionToken(token), nowIso()]
   )
 
-  const row = result.rows[0]
   if (!row) return null
 
   return {
     user: toAuthUser(row),
-    userId: row.session_user_id
+    userId: row.user_id
   }
 }
 
@@ -405,34 +434,34 @@ function humanizePageName(value: TrackedPageName): string {
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
-function formatDateTime(value: Date | string | null): string {
+function formatDateTime(value: string | null): string {
   if (!value) return 'Never'
 
-  const date = typeof value === 'string' ? new Date(value) : value
   return new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
     hour: 'numeric',
     minute: '2-digit'
-  }).format(date)
+  }).format(new Date(value))
 }
 
 function formatDuration(seconds: number): string {
   if (seconds <= 0) return '0m'
 
-  if (seconds < 60) {
-    return `${seconds}s`
-  }
+  if (seconds < 60) return `${seconds}s`
 
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
 
-  if (hours === 0) {
-    return `${minutes}m`
-  }
-
+  if (hours === 0) return `${minutes}m`
   return `${hours}h ${minutes}m`
+}
+
+function maxIsoDate(values: Array<string | null | undefined>): string | null {
+  const filtered = values.filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+  if (filtered.length === 0) return null
+  return filtered.reduce((latest, value) => (value > latest ? value : latest))
 }
 
 async function loadDashboardData(): Promise<{
@@ -441,116 +470,140 @@ async function loadDashboardData(): Promise<{
   userMetrics: DashboardUserMetricRow[]
   recentWorkouts: DashboardRecentWorkoutRow[]
 }> {
-  const [summaryResult, pageMetricsResult, userMetricsResult, recentWorkoutsResult] = await Promise.all([
-    pool.query<DashboardSummaryRow>(`
+  const users = all<DatabaseUserRow>(`select id, name, email, created_at from users`)
+  const workouts = all<DatabaseWorkoutSessionRow>(
+    `
       select
-        (select count(*)::int from ${usersTable}) as total_users,
-        (select count(distinct user_id)::int from ${workoutSessionsTable}) as users_with_workouts,
-        (
-          select count(*)::int
-          from (
-            select user_id from ${pageVisitsTable} where exited_at >= now() - interval '7 days'
-            union
-            select user_id from ${workoutSessionsTable} where completed_at >= now() - interval '7 days'
-          ) as active_users
-        ) as active_users_7d,
-        (select count(*)::int from ${workoutSessionsTable}) as total_workouts,
-        (select coalesce(sum(duration_seconds), 0)::int from ${workoutSessionsTable}) as total_workout_seconds,
-        (select coalesce(round(sum(duration_ms) / 1000.0), 0)::int from ${pageVisitsTable}) as total_tracked_seconds
-    `),
-    pool.query<DashboardPageMetricRow>(`
+        id, user_id, user_email, completed_at, duration_seconds, total_reps, valid_reps, invalid_reps,
+        depth_score, posture_score, notes, total_sets, reps_per_set, created_at
+      from workout_sessions
+      order by completed_at desc
+    `
+  )
+  const pageVisits = all<DatabasePageVisitRow>(
+    `
       select
-        page_name,
-        count(*)::int as views,
-        count(distinct user_id)::int as unique_users,
-        coalesce(round(avg(duration_ms) / 1000.0), 0)::int as avg_duration_seconds,
-        coalesce(round(sum(duration_ms) / 1000.0), 0)::int as total_duration_seconds
-      from ${pageVisitsTable}
-      group by page_name
-      order by total_duration_seconds desc, page_name asc
-    `),
-    pool.query<DashboardUserMetricRow>(`
-      with workout_stats as (
-        select
-          user_id,
-          count(*)::int as total_sessions,
-          coalesce(sum(duration_seconds), 0)::int as workout_duration_seconds,
-          coalesce(round(avg(depth_score)), 0)::int as avg_depth_score,
-          coalesce(round(avg(posture_score)), 0)::int as avg_posture_score,
-          max(completed_at) as last_workout_at
-        from ${workoutSessionsTable}
-        group by user_id
-      ),
-      visit_stats as (
-        select
-          user_id,
-          count(*)::int as total_page_views,
-          coalesce(round(sum(duration_ms) / 1000.0), 0)::int as app_duration_seconds,
-          max(exited_at) as last_seen_at
-        from ${pageVisitsTable}
-        group by user_id
-      )
-      select
-        users.id,
-        users.name,
-        users.email,
-        users.created_at,
-        greatest(
-          users.created_at,
-          coalesce(visit_stats.last_seen_at, users.created_at),
-          coalesce(workout_stats.last_workout_at, users.created_at)
-        ) as last_seen_at,
-        workout_stats.last_workout_at,
-        coalesce(workout_stats.total_sessions, 0)::int as total_sessions,
-        coalesce(workout_stats.workout_duration_seconds, 0)::int as workout_duration_seconds,
-        coalesce(workout_stats.avg_depth_score, 0)::int as avg_depth_score,
-        coalesce(workout_stats.avg_posture_score, 0)::int as avg_posture_score,
-        coalesce(visit_stats.total_page_views, 0)::int as total_page_views,
-        coalesce(visit_stats.app_duration_seconds, 0)::int as app_duration_seconds,
-        favorite_page.favorite_page
-      from ${usersTable} as users
-      left join workout_stats on workout_stats.user_id = users.id
-      left join visit_stats on visit_stats.user_id = users.id
-      left join lateral (
-        select page_name as favorite_page
-        from ${pageVisitsTable}
-        where user_id = users.id
-        group by page_name
-        order by sum(duration_ms) desc, page_name asc
-        limit 1
-      ) as favorite_page on true
-      order by last_seen_at desc, users.created_at desc
-    `),
-    pool.query<DashboardRecentWorkoutRow>(`
-      select
-        workout_sessions.id,
-        users.name,
-        users.email,
-        workout_sessions.completed_at,
-        workout_sessions.duration_seconds,
-        workout_sessions.total_reps,
-        workout_sessions.valid_reps,
-        workout_sessions.depth_score,
-        workout_sessions.posture_score
-      from ${workoutSessionsTable} as workout_sessions
-      inner join ${usersTable} as users on users.id = workout_sessions.user_id
-      order by workout_sessions.completed_at desc
-      limit 18
-    `)
-  ])
+        id, user_id, user_email, browser_session_id, page_name, entered_at, exited_at, duration_ms, created_at
+      from page_visits
+      order by exited_at desc
+    `
+  )
+
+  const activeThreshold = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const usersById = new Map(users.map((user) => [user.id, user]))
+
+  const activeUserIds = new Set<string>()
+  for (const workout of workouts) {
+    if (workout.completed_at >= activeThreshold) activeUserIds.add(workout.user_id)
+  }
+  for (const visit of pageVisits) {
+    if (visit.exited_at >= activeThreshold) activeUserIds.add(visit.user_id)
+  }
+
+  const usersWithWorkouts = new Set(workouts.map((workout) => workout.user_id))
+
+  const pageMetrics = trackedPageNames.map<DashboardPageMetricRow>((pageName) => {
+    const visits = pageVisits.filter((visit) => visit.page_name === pageName)
+    const totalDurationMs = visits.reduce((sum, visit) => sum + visit.duration_ms, 0)
+
+    return {
+      page_name: pageName,
+      views: visits.length,
+      unique_users: new Set(visits.map((visit) => visit.user_id)).size,
+      avg_duration_seconds: visits.length === 0 ? 0 : Math.round(totalDurationMs / visits.length / 1000),
+      total_duration_seconds: Math.round(totalDurationMs / 1000)
+    }
+  })
+
+  const userMetrics = users
+    .map<DashboardUserMetricRow>((user) => {
+      const userWorkouts = workouts.filter((workout) => workout.user_id === user.id)
+      const userVisits = pageVisits.filter((visit) => visit.user_id === user.id)
+      const workoutDurationSeconds = userWorkouts.reduce((sum, workout) => sum + workout.duration_seconds, 0)
+      const appDurationSeconds = Math.round(userVisits.reduce((sum, visit) => sum + visit.duration_ms, 0) / 1000)
+
+      const pageDurationByName = new Map<TrackedPageName, number>()
+      for (const pageName of trackedPageNames) {
+        pageDurationByName.set(pageName, 0)
+      }
+      for (const visit of userVisits) {
+        const current = pageDurationByName.get(visit.page_name) ?? 0
+        pageDurationByName.set(visit.page_name, current + visit.duration_ms)
+      }
+
+      let favoritePage: TrackedPageName | null = null
+      let favoritePageDuration = 0
+      for (const pageName of trackedPageNames) {
+        const duration = pageDurationByName.get(pageName) ?? 0
+        if (duration > favoritePageDuration) {
+          favoritePage = pageName
+          favoritePageDuration = duration
+        }
+      }
+
+      const lastWorkoutAt = maxIsoDate(userWorkouts.map((workout) => workout.completed_at))
+      const lastVisitAt = maxIsoDate(userVisits.map((visit) => visit.exited_at))
+      const lastSeenAt = maxIsoDate([user.created_at, lastWorkoutAt, lastVisitAt]) ?? user.created_at
+
+      return {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        created_at: user.created_at,
+        last_seen_at: lastSeenAt,
+        last_workout_at: lastWorkoutAt,
+        total_sessions: userWorkouts.length,
+        workout_duration_seconds: workoutDurationSeconds,
+        avg_depth_score:
+          userWorkouts.length === 0
+            ? 0
+            : Math.round(userWorkouts.reduce((sum, workout) => sum + workout.depth_score, 0) / userWorkouts.length),
+        avg_posture_score:
+          userWorkouts.length === 0
+            ? 0
+            : Math.round(
+                userWorkouts.reduce((sum, workout) => sum + workout.posture_score, 0) / userWorkouts.length
+              ),
+        total_page_views: userVisits.length,
+        app_duration_seconds: appDurationSeconds,
+        favorite_page: favoritePageDuration > 0 ? favoritePage : null
+      }
+    })
+    .sort((left, right) => {
+      if (left.last_seen_at === right.last_seen_at) {
+        return right.created_at.localeCompare(left.created_at)
+      }
+      return right.last_seen_at.localeCompare(left.last_seen_at)
+    })
+
+  const recentWorkouts = workouts.slice(0, 18).map<DashboardRecentWorkoutRow>((workout) => {
+    const user = usersById.get(workout.user_id)
+
+    return {
+      id: workout.id,
+      name: user?.name ?? workout.user_email,
+      email: user?.email ?? workout.user_email,
+      completed_at: workout.completed_at,
+      duration_seconds: workout.duration_seconds,
+      total_reps: workout.total_reps,
+      valid_reps: workout.valid_reps,
+      depth_score: workout.depth_score,
+      posture_score: workout.posture_score
+    }
+  })
 
   return {
-    summary: summaryResult.rows[0] ?? {
-      total_users: 0,
-      users_with_workouts: 0,
-      active_users_7d: 0,
-      total_workouts: 0,
-      total_workout_seconds: 0,
-      total_tracked_seconds: 0
+    summary: {
+      total_users: users.length,
+      users_with_workouts: usersWithWorkouts.size,
+      active_users_7d: activeUserIds.size,
+      total_workouts: workouts.length,
+      total_workout_seconds: workouts.reduce((sum, workout) => sum + workout.duration_seconds, 0),
+      total_tracked_seconds: Math.round(pageVisits.reduce((sum, visit) => sum + visit.duration_ms, 0) / 1000)
     },
-    pageMetrics: pageMetricsResult.rows,
-    userMetrics: userMetricsResult.rows,
-    recentWorkouts: recentWorkoutsResult.rows
+    pageMetrics,
+    userMetrics,
+    recentWorkouts
   }
 }
 
@@ -560,26 +613,19 @@ function renderDashboardHtml(data: {
   userMetrics: DashboardUserMetricRow[]
   recentWorkouts: DashboardRecentWorkoutRow[]
 }): string {
-  const pageMetricsMarkup =
-    data.pageMetrics.length === 0
-      ? `
-          <tr>
-            <td colspan="5" class="empty-row">No page analytics yet. Screen-time tracking starts after this dashboard release.</td>
-          </tr>
-        `
-      : data.pageMetrics
-          .map(
-            (row) => `
-              <tr>
-                <td>${escapeHtml(humanizePageName(row.page_name))}</td>
-                <td>${row.views}</td>
-                <td>${row.unique_users}</td>
-                <td>${escapeHtml(formatDuration(row.avg_duration_seconds))}</td>
-                <td>${escapeHtml(formatDuration(row.total_duration_seconds))}</td>
-              </tr>
-            `
-          )
-          .join('')
+  const pageMetricsMarkup = data.pageMetrics
+    .map(
+      (row) => `
+        <tr>
+          <td>${escapeHtml(humanizePageName(row.page_name))}</td>
+          <td>${row.views}</td>
+          <td>${row.unique_users}</td>
+          <td>${escapeHtml(formatDuration(row.avg_duration_seconds))}</td>
+          <td>${escapeHtml(formatDuration(row.total_duration_seconds))}</td>
+        </tr>
+      `
+    )
+    .join('')
 
   const userMetricsMarkup =
     data.userMetrics.length === 0
@@ -652,12 +698,12 @@ function renderDashboardHtml(data: {
       --text: #eff7fb;
       --muted: #9fb8c9;
       --accent: #7ce2ff;
-      --accent-strong: #34c5ff;
       --warm: #ffbf75;
       --shadow: 0 24px 48px rgba(2, 11, 18, 0.38);
     }
 
     * { box-sizing: border-box; }
+
     body {
       margin: 0;
       min-height: 100vh;
@@ -830,11 +876,11 @@ function renderDashboardHtml(data: {
       <p class="eyebrow">Protected dashboard</p>
       <h1>Noskip product and database overview</h1>
       <p class="hero-copy">
-        Live snapshot of the Fly PostgreSQL data: users, workout history, tracked in-app screen time, and recent product activity.
+        Live snapshot of the Fly SQLite data: users, workout history, tracked in-app screen time, and recent product activity.
       </p>
       <div class="pill-row">
-        <span class="pill">Schema ${escapeHtml(databaseSchema)}</span>
-        <span class="pill">Updated ${escapeHtml(formatDateTime(new Date()))}</span>
+        <span class="pill">SQLite volume-backed</span>
+        <span class="pill">Updated ${escapeHtml(formatDateTime(nowIso()))}</span>
         <a class="refresh" href="/dashboard">Refresh</a>
       </div>
     </section>
@@ -946,66 +992,65 @@ function renderDashboardHtml(data: {
 </html>`
 }
 
-async function ensureSchema(): Promise<void> {
-  await pool.query(`
-    create schema if not exists ${quotedSchema};
+function ensureSchema(): void {
+  exec(`
+    pragma foreign_keys = on;
+    pragma journal_mode = wal;
+    pragma busy_timeout = 5000;
 
-    create table if not exists ${usersTable} (
+    create table if not exists users (
       id text primary key,
       name text not null,
       email text not null unique,
       password_hash text not null,
-      created_at timestamptz not null default now()
+      created_at text not null
     );
 
-    create table if not exists ${authSessionsTable} (
+    create table if not exists auth_sessions (
       id text primary key,
-      user_id text not null references ${usersTable}(id) on delete cascade,
+      user_id text not null references users(id) on delete cascade,
       token_hash text not null unique,
-      expires_at timestamptz not null,
-      created_at timestamptz not null default now()
+      expires_at text not null,
+      created_at text not null
     );
 
-    create table if not exists ${workoutSessionsTable} (
+    create table if not exists workout_sessions (
       id text primary key,
-      user_id text not null references ${usersTable}(id) on delete cascade,
+      user_id text not null references users(id) on delete cascade,
       user_email text not null,
-      completed_at timestamptz not null,
+      completed_at text not null,
       duration_seconds integer not null,
       total_reps integer not null,
       valid_reps integer not null,
       invalid_reps integer not null,
       depth_score integer not null,
       posture_score integer not null,
-      notes jsonb not null default '[]'::jsonb,
+      notes text not null default '[]',
       total_sets integer not null,
       reps_per_set integer not null,
-      created_at timestamptz not null default now()
+      created_at text not null
     );
 
-    create table if not exists ${pageVisitsTable} (
+    create table if not exists page_visits (
       id text primary key,
-      user_id text not null references ${usersTable}(id) on delete cascade,
+      user_id text not null references users(id) on delete cascade,
       user_email text not null,
       browser_session_id text not null,
-      page_name text not null,
-      entered_at timestamptz not null,
-      exited_at timestamptz not null,
+      page_name text not null check (page_name in ('home', 'details', 'live', 'results', 'profile')),
+      entered_at text not null,
+      exited_at text not null,
       duration_ms integer not null check (duration_ms >= 0),
-      created_at timestamptz not null default now()
+      created_at text not null
     );
 
-    create index if not exists ${databaseSchema}_auth_sessions_user_id_idx on ${authSessionsTable} (user_id);
-    create index if not exists ${databaseSchema}_auth_sessions_expires_at_idx on ${authSessionsTable} (expires_at);
-    create index if not exists ${databaseSchema}_workout_sessions_user_id_completed_idx
-      on ${workoutSessionsTable} (user_id, completed_at desc);
-    create index if not exists ${databaseSchema}_page_visits_user_id_exited_idx
-      on ${pageVisitsTable} (user_id, exited_at desc);
-    create index if not exists ${databaseSchema}_page_visits_page_name_exited_idx
-      on ${pageVisitsTable} (page_name, exited_at desc);
+    create index if not exists auth_sessions_user_id_idx on auth_sessions (user_id);
+    create index if not exists auth_sessions_expires_at_idx on auth_sessions (expires_at);
+    create index if not exists workout_sessions_user_id_completed_idx on workout_sessions (user_id, completed_at desc);
+    create index if not exists page_visits_user_id_exited_idx on page_visits (user_id, exited_at desc);
+    create index if not exists page_visits_page_name_exited_idx on page_visits (page_name, exited_at desc);
   `)
 
-  await pool.query(`delete from ${authSessionsTable} where expires_at <= now()`)
+  cleanupExpiredSessions()
 }
 
 const app = express()
@@ -1041,10 +1086,10 @@ const asyncHandler =
     void handler(request, response, next).catch(next)
   }
 
-const loadAuthUser = asyncHandler(async (request, response, next) => {
+const loadAuthUser = asyncHandler(async (request, _response, next) => {
   const authRequest = request as AuthenticatedRequest
   const token = readCookie(request.headers.cookie, sessionCookieName)
-  const session = await findSessionUser(token)
+  const session = findSessionUser(token)
 
   if (session) {
     authRequest.authUser = session.user
@@ -1066,7 +1111,7 @@ function requireAuth(request: Request, response: Response): request is Authentic
 }
 
 app.get('/healthz', (_request, response) => {
-  response.json({ ok: true })
+  response.json({ ok: true, databasePath })
 })
 
 app.get(
@@ -1100,29 +1145,37 @@ app.post(
       return
     }
 
-    const existing = await pool.query<{ id: string }>(`select id from ${usersTable} where email = $1 limit 1`, [email])
-    if (existing.rows[0]) {
+    const existing = get<{ id: string }>(`select id from users where email = ? limit 1`, [email])
+    if (existing) {
       response.status(409).json({ message: 'An account with that email already exists.' })
       return
     }
 
     const userId = randomUUID()
     const passwordHash = await hashPassword(password)
+    const createdAt = nowIso()
 
-    const result = await pool.query<DatabaseUserRow>(
+    run(
       `
-        insert into ${usersTable} (id, name, email, password_hash)
-        values ($1, $2, $3, $4)
-        returning id, name, email, created_at
+        insert into users (id, name, email, password_hash, created_at)
+        values (?, ?, ?, ?, ?)
       `,
-      [userId, name, email, passwordHash]
+      [userId, name, email, passwordHash, createdAt]
     )
 
-    const user = toAuthUser(result.rows[0])
-    const token = await createAuthSession(userId)
+    const userRow = get<DatabaseUserRow>(
+      `select id, name, email, created_at from users where id = ? limit 1`,
+      [userId]
+    )
 
+    if (!userRow) {
+      response.status(500).json({ message: 'Account creation did not complete.' })
+      return
+    }
+
+    const token = await createAuthSession(userId)
     setSessionCookie(response, token)
-    response.status(201).json({ ok: true, user })
+    response.status(201).json({ ok: true, user: toAuthUser(userRow) })
   })
 )
 
@@ -1137,12 +1190,11 @@ app.post(
       return
     }
 
-    const result = await pool.query<DatabaseUserRow>(
-      `select id, name, email, created_at, password_hash from ${usersTable} where email = $1 limit 1`,
+    const row = get<DatabaseUserRow>(
+      `select id, name, email, created_at, password_hash from users where email = ? limit 1`,
       [email]
     )
 
-    const row = result.rows[0]
     if (!row?.password_hash || !(await verifyPassword(password, row.password_hash))) {
       response.status(401).json({ message: 'Email or password is incorrect.' })
       return
@@ -1158,7 +1210,7 @@ app.post(
   '/api/auth/logout',
   asyncHandler(async (request, response) => {
     const token = readCookie(request.headers.cookie, sessionCookieName)
-    await destroyAuthSession(token)
+    destroyAuthSession(token)
     clearSessionCookie(response)
     response.json({ ok: true })
   })
@@ -1171,37 +1223,30 @@ app.post(
     if (!requireAuth(request, response)) return
 
     const authRequest = request as AuthenticatedRequest
-    const authUser = authRequest.authUser
-    const authUserId = authRequest.authUserId
-
-    if (!authUser || !authUserId) {
-      response.status(401).json({ message: 'Authentication required.' })
-      return
-    }
-
     const pageVisit = parsePageVisitDraft(request.body)
 
-    if (!pageVisit) {
+    if (!pageVisit || !authRequest.authUser || !authRequest.authUserId) {
       response.status(400).json({ message: 'Page visit payload is invalid.' })
       return
     }
 
-    await pool.query<DatabasePageVisitRow>(
+    run(
       `
-        insert into ${pageVisitsTable} (
-          id, user_id, user_email, browser_session_id, page_name, entered_at, exited_at, duration_ms
+        insert into page_visits (
+          id, user_id, user_email, browser_session_id, page_name, entered_at, exited_at, duration_ms, created_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         randomUUID(),
-        authUserId,
-        authUser.email,
+        authRequest.authUserId,
+        authRequest.authUser.email,
         pageVisit.browserSessionId,
         pageVisit.pageName,
         pageVisit.enteredAt,
         pageVisit.exitedAt,
-        pageVisit.durationMs
+        pageVisit.durationMs,
+        nowIso()
       ]
     )
 
@@ -1216,18 +1261,26 @@ app.get(
     if (!requireAuth(request, response)) return
 
     const authRequest = request as AuthenticatedRequest
-    const result = await pool.query<DatabaseSessionRow>(
+    const authUserId = authRequest.authUserId
+
+    if (!authUserId) {
+      response.status(401).json({ message: 'Authentication required.' })
+      return
+    }
+
+    const rows = all<DatabaseWorkoutSessionRow>(
       `
-        select id, user_email, completed_at, duration_seconds, total_reps, valid_reps, invalid_reps,
-               depth_score, posture_score, notes, total_sets, reps_per_set
-        from ${workoutSessionsTable}
-        where user_id = $1
+        select
+          id, user_id, user_email, completed_at, duration_seconds, total_reps, valid_reps, invalid_reps,
+          depth_score, posture_score, notes, total_sets, reps_per_set, created_at
+        from workout_sessions
+        where user_id = ?
         order by completed_at desc
       `,
-      [authRequest.authUserId]
+      [authUserId]
     )
 
-    response.json({ sessions: result.rows.map(toStoredSession) })
+    response.json({ sessions: rows.map(toStoredSession) })
   })
 )
 
@@ -1264,15 +1317,14 @@ app.post(
     }
 
     const sessionId = randomUUID()
-    const result = await pool.query<DatabaseSessionRow>(
+
+    run(
       `
-        insert into ${workoutSessionsTable} (
+        insert into workout_sessions (
           id, user_id, user_email, completed_at, duration_seconds, total_reps, valid_reps, invalid_reps,
-          depth_score, posture_score, notes, total_sets, reps_per_set
+          depth_score, posture_score, notes, total_sets, reps_per_set, created_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
-        returning id, user_email, completed_at, duration_seconds, total_reps, valid_reps, invalid_reps,
-                  depth_score, posture_score, notes, total_sets, reps_per_set
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         sessionId,
@@ -1287,11 +1339,29 @@ app.post(
         sessionDraft.postureScore,
         JSON.stringify(sessionDraft.notes),
         sessionDraft.totalSets,
-        sessionDraft.repsPerSet
+        sessionDraft.repsPerSet,
+        nowIso()
       ]
     )
 
-    response.status(201).json({ session: toStoredSession(result.rows[0]) })
+    const row = get<DatabaseWorkoutSessionRow>(
+      `
+        select
+          id, user_id, user_email, completed_at, duration_seconds, total_reps, valid_reps, invalid_reps,
+          depth_score, posture_score, notes, total_sets, reps_per_set, created_at
+        from workout_sessions
+        where id = ?
+        limit 1
+      `,
+      [sessionId]
+    )
+
+    if (!row) {
+      response.status(500).json({ message: 'Session save did not complete.' })
+      return
+    }
+
+    response.status(201).json({ session: toStoredSession(row) })
   })
 )
 
@@ -1320,15 +1390,17 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
   response.status(500).json({ message: 'Internal server error.' })
 })
 
-async function startServer(): Promise<void> {
-  await ensureSchema()
+function startServer(): void {
+  ensureSchema()
 
   app.listen(port, () => {
-    console.log(`Noskip server listening on port ${port}`)
+    console.log(`Noskip server listening on port ${port} using SQLite at ${databasePath}`)
   })
 }
 
-void startServer().catch((error) => {
+try {
+  startServer()
+} catch (error) {
   console.error('Failed to start Noskip server', error)
   process.exit(1)
-})
+}
