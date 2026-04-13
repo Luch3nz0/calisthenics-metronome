@@ -47,6 +47,15 @@
             <input id="auth-name-input" name="name" type="text" autocomplete="name" placeholder="Enzo">
           </label>
 
+          <label class="field" id="auth-sex-row">
+            <span>Sex for FMS setup</span>
+            <select id="auth-sex-select" name="sexForTSPU">
+              <option value="">Select one</option>
+              <option value="male">Male</option>
+              <option value="female">Female</option>
+            </select>
+          </label>
+
           <label class="field">
             <span>Email</span>
             <input id="auth-email-input" name="email" type="email" autocomplete="email" placeholder="enzo@example.com" required>
@@ -118,7 +127,26 @@
 
         <nav class="bottom-nav" aria-label="Primary navigation">
           <button class="bottom-nav-button is-active" id="home-nav-home" type="button">Coach</button>
+          <button class="bottom-nav-button" id="home-nav-fms" type="button">FMS</button>
           <button class="bottom-nav-button" id="home-nav-profile" type="button">Profile</button>
+        </nav>
+      </section>
+
+      <section class="screen" data-screen="fms" hidden>
+        <header class="topbar">
+          <button class="chip-button" id="fms-home-btn" type="button">Coach</button>
+          <div class="brand-lockup compact">
+            <img src="assets/logo.png" alt="Noskip logo" class="brand-logo">
+          </div>
+          <button class="chip-button" id="fms-profile-btn" type="button">Profile</button>
+        </header>
+
+        <div id="fms-root"></div>
+
+        <nav class="bottom-nav" aria-label="Primary navigation">
+          <button class="bottom-nav-button" id="fms-nav-home" type="button">Coach</button>
+          <button class="bottom-nav-button is-active" id="fms-nav-fms" type="button">FMS</button>
+          <button class="bottom-nav-button" id="fms-nav-profile" type="button">Profile</button>
         </nav>
       </section>
 
@@ -301,6 +329,7 @@
 
         <nav class="bottom-nav" aria-label="Primary navigation">
           <button class="bottom-nav-button" id="profile-nav-home" type="button">Coach</button>
+          <button class="bottom-nav-button" id="profile-nav-fms" type="button">FMS</button>
           <button class="bottom-nav-button is-active" id="profile-nav-profile" type="button">Profile</button>
         </nav>
       </section>

@@ -1,6 +1,24 @@
-import type { AuthUser, PageVisitDraft, ProfileStats, SessionDraft, StoredSession } from './shared-types.js'
+import type {
+  AuthUser,
+  FmsSessionDraft,
+  PageVisitDraft,
+  ProfileStats,
+  SessionDraft,
+  SexForTSPU,
+  StoredFmsSession,
+  StoredSession
+} from './shared-types.js'
 
-export type { AuthUser, PageVisitDraft, ProfileStats, SessionDraft, StoredSession } from './shared-types.js'
+export type {
+  AuthUser,
+  FmsSessionDraft,
+  PageVisitDraft,
+  ProfileStats,
+  SessionDraft,
+  SexForTSPU,
+  StoredFmsSession,
+  StoredSession
+} from './shared-types.js'
 
 type ApiErrorPayload = {
   message?: string
@@ -22,6 +40,14 @@ type HistoryResponse = {
 
 type SaveSessionResponse = {
   session: StoredSession
+}
+
+type FmsHistoryResponse = {
+  sessions: StoredFmsSession[]
+}
+
+type SaveFmsSessionResponse = {
+  session: StoredFmsSession
 }
 
 type OkResponse = {
@@ -83,11 +109,12 @@ export async function getActiveUser(): Promise<AuthUser | null> {
 export async function registerUser(
   name: string,
   email: string,
-  password: string
+  password: string,
+  sexForTSPU: SexForTSPU
 ): Promise<{ ok: boolean; message?: string; user?: AuthUser }> {
   const response = await requestJson<AuthResponse>('/api/auth/signup', {
     method: 'POST',
-    body: JSON.stringify({ name, email, password })
+    body: JSON.stringify({ name, email, password, sexForTSPU })
   })
 
   if (!response.ok) {
@@ -129,6 +156,24 @@ export async function logoutUser(): Promise<void> {
   }
 }
 
+export async function updateSexForTSPU(
+  sexForTSPU: Exclude<SexForTSPU, 'unspecified'>
+): Promise<{ ok: boolean; message?: string; user?: AuthUser }> {
+  const response = await requestJson<AuthResponse>('/api/profile', {
+    method: 'PATCH',
+    body: JSON.stringify({ sexForTSPU })
+  })
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      message: await readErrorMessage(response, 'Could not update the profile.')
+    }
+  }
+
+  return readJson<AuthResponse>(response)
+}
+
 export async function getSessionsForUser(): Promise<StoredSession[]> {
   const response = await requestJson<HistoryResponse>('/api/history')
 
@@ -152,6 +197,32 @@ export async function saveSession(session: SessionDraft): Promise<StoredSession>
   }
 
   const payload = await readJson<SaveSessionResponse>(response)
+  return payload.session
+}
+
+export async function getFmsSessionsForUser(): Promise<StoredFmsSession[]> {
+  const response = await requestJson<FmsHistoryResponse>('/api/fms/history')
+
+  if (response.status === 401) return []
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Could not load FMS history.'))
+  }
+
+  const payload = await readJson<FmsHistoryResponse>(response)
+  return payload.sessions
+}
+
+export async function saveFmsSession(session: FmsSessionDraft): Promise<StoredFmsSession> {
+  const response = await requestJson<SaveFmsSessionResponse>('/api/fms/history', {
+    method: 'POST',
+    body: JSON.stringify(session)
+  })
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, 'Could not save the FMS session.'))
+  }
+
+  const payload = await readJson<SaveFmsSessionResponse>(response)
   return payload.session
 }
 

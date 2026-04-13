@@ -41,10 +41,10 @@ export async function getActiveUser() {
     const payload = await readJson(response);
     return payload.user;
 }
-export async function registerUser(name, email, password) {
+export async function registerUser(name, email, password, sexForTSPU) {
     const response = await requestJson('/api/auth/signup', {
         method: 'POST',
-        body: JSON.stringify({ name, email, password })
+        body: JSON.stringify({ name, email, password, sexForTSPU })
     });
     if (!response.ok) {
         return {
@@ -75,6 +75,19 @@ export async function logoutUser() {
         throw new Error(await readErrorMessage(response, 'Could not log out.'));
     }
 }
+export async function updateSexForTSPU(sexForTSPU) {
+    const response = await requestJson('/api/profile', {
+        method: 'PATCH',
+        body: JSON.stringify({ sexForTSPU })
+    });
+    if (!response.ok) {
+        return {
+            ok: false,
+            message: await readErrorMessage(response, 'Could not update the profile.')
+        };
+    }
+    return readJson(response);
+}
 export async function getSessionsForUser() {
     const response = await requestJson('/api/history');
     if (response.status === 401)
@@ -92,6 +105,27 @@ export async function saveSession(session) {
     });
     if (!response.ok) {
         throw new Error(await readErrorMessage(response, 'Could not save the session.'));
+    }
+    const payload = await readJson(response);
+    return payload.session;
+}
+export async function getFmsSessionsForUser() {
+    const response = await requestJson('/api/fms/history');
+    if (response.status === 401)
+        return [];
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response, 'Could not load FMS history.'));
+    }
+    const payload = await readJson(response);
+    return payload.sessions;
+}
+export async function saveFmsSession(session) {
+    const response = await requestJson('/api/fms/history', {
+        method: 'POST',
+        body: JSON.stringify(session)
+    });
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response, 'Could not save the FMS session.'));
     }
     const payload = await readJson(response);
     return payload.session;

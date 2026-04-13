@@ -44,7 +44,9 @@ body {
 
 body,
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -58,7 +60,9 @@ img {
   max-width: 100%;
 }
 
-input {
+input,
+select,
+textarea {
   width: 100%;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 16px;
@@ -69,9 +73,16 @@ input {
   transition: border-color 140ms ease, transform 140ms ease;
 }
 
-input:focus {
+input:focus,
+select:focus,
+textarea:focus {
   border-color: rgba(104, 229, 255, 0.6);
   transform: translateY(-1px);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 108px;
 }
 
 .bg-layer {
@@ -295,6 +306,8 @@ h2 {
 .detail-card,
 .profile-card,
 .history-card,
+.fms-card,
+.fms-summary-card,
 .diagnostics-card,
 .checklist-card,
 .results-card {
@@ -310,6 +323,21 @@ h2 {
 .field span {
   font-size: 14px;
   font-weight: 600;
+}
+
+.checkbox-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  color: var(--muted);
+}
+
+.checkbox-row input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  transform: translateY(2px);
 }
 
 .form-error {
@@ -639,6 +667,52 @@ h2 {
   color: var(--muted);
 }
 
+.fms-note-stack,
+.fms-score-list,
+.fms-pattern-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.fms-score-option,
+.fms-pattern-row {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.fms-score-option {
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+}
+
+.fms-score-option input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  transform: translateY(3px);
+}
+
+.fms-score-option span,
+.fms-pattern-row span {
+  display: grid;
+  gap: 6px;
+}
+
+.fms-score-option strong,
+.fms-pattern-row strong {
+  color: var(--text);
+}
+
+.fms-score-option small,
+.fms-pattern-row small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .history-card {
   min-height: 260px;
 }
@@ -680,7 +754,7 @@ h2 {
 
 .bottom-nav {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 

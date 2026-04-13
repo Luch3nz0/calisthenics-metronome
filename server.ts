@@ -5,7 +5,21 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
-import type { AuthUser, PageVisitDraft, SessionDraft, StoredSession, TrackedPageName } from './shared-types.js'
+import {
+  fmsPatternKeys,
+  type AuthUser,
+  type FmsPatternKey,
+  type FmsPatternMap,
+  type FmsSessionDraft,
+  type FmsSessionStatus,
+  type FmsScoreValue,
+  type PageVisitDraft,
+  type SessionDraft,
+  type SexForTSPU,
+  type StoredFmsSession,
+  type StoredSession,
+  type TrackedPageName
+} from './shared-types.js'
 
 const scrypt = promisify(scryptCallback)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -20,13 +34,14 @@ const sessionCookieName = 'noskip_session'
 const sessionTtlMs = 1000 * 60 * 60 * 24 * 30
 const adminDashboardUsername = (process.env.ADMIN_DASHBOARD_USERNAME ?? 'admin').trim() || 'admin'
 const adminDashboardPassword = process.env.ADMIN_DASHBOARD_PASSWORD?.trim() ?? ''
-const trackedPageNames: readonly TrackedPageName[] = ['home', 'details', 'live', 'results', 'profile']
+const trackedPageNames: readonly TrackedPageName[] = ['home', 'details', 'live', 'results', 'profile', 'fms']
 
 type DatabaseUserRow = {
   id: string
   name: string
   email: string
   created_at: string
+  sex_for_tspu: SexForTSPU
   password_hash?: string
 }
 
@@ -64,6 +79,25 @@ type DatabaseAuthSessionRow = {
   id: string
   name: string
   email: string
+  created_at: string
+  sex_for_tspu: SexForTSPU
+}
+
+type DatabaseFmsSessionRow = {
+  id: string
+  user_id: string
+  user_email: string
+  started_at: string
+  completed_at: string | null
+  status: FmsSessionStatus
+  disclaimer_accepted: number
+  sex_for_tspu: SexForTSPU
+  equipment_confirmed: number
+  patterns_json: string
+  total_score: number | null
+  any_pain: number
+  any_asymmetry: number
+  notes_json: string
   created_at: string
 }
 
@@ -142,8 +176,13 @@ function toAuthUser(row: DatabaseUserRow): AuthUser {
     id: row.id,
     name: row.name,
     email: row.email,
-    createdAt: new Date(row.created_at).toISOString()
+    createdAt: new Date(row.created_at).toISOString(),
+    sexForTSPU: parseSexForTSPU(row.sex_for_tspu)
   }
+}
+
+function parseSexForTSPU(value: unknown): SexForTSPU {
+  return value === 'male' || value === 'female' ? value : 'unspecified'
 }
 
 function parseNotesJson(value: string): string[] {
@@ -153,6 +192,68 @@ function parseNotesJson(value: string): string[] {
   } catch {
     return []
   }
+}
+
+function sanitizeTextList(value: unknown, maxItems: number, maxChars: number): string[] {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .map((item) => String(item).trim())
+    .filter((item) => item !== '')
+    .slice(0, maxItems)
+    .map((item) => item.slice(0, maxChars))
+}
+
+function parseFmsScoreValue(value: unknown): FmsScoreValue | undefined {
+  return value === 0 || value === 1 || value === 2 || value === 3 ? value : undefined
+}
+
+function parseFmsSessionStatus(value: unknown): FmsSessionStatus | null {
+  return value === 'in_progress' || value === 'completed' || value === 'stopped_pain' || value === 'incomplete'
+    ? value
+    : null
+}
+
+function parseFmsPatternMap(value: unknown): FmsPatternMap | null {
+  if (!value || typeof value !== 'object') return null
+
+  const next = {} as FmsPatternMap
+
+  for (const patternKey of fmsPatternKeys) {
+    const current = (value as Record<string, unknown>)[patternKey]
+    if (!current || typeof current !== 'object') return null
+
+    const rawLeft = parseFmsScoreValue((current as Record<string, unknown>).rawLeft)
+    const rawRight = parseFmsScoreValue((current as Record<string, unknown>).rawRight)
+    const finalScore = parseFmsScoreValue((current as Record<string, unknown>).finalScore)
+    const confidenceValue = (current as Record<string, unknown>).confidence
+
+    if (typeof (current as Record<string, unknown>).pain !== 'boolean') return null
+    if (
+      (current as Record<string, unknown>).clearingPain !== undefined &&
+      typeof (current as Record<string, unknown>).clearingPain !== 'boolean'
+    ) {
+      return null
+    }
+
+    next[patternKey] = {
+      rawLeft,
+      rawRight,
+      finalScore,
+      pain: Boolean((current as Record<string, unknown>).pain),
+      clearingPain:
+        typeof (current as Record<string, unknown>).clearingPain === 'boolean'
+          ? Boolean((current as Record<string, unknown>).clearingPain)
+          : undefined,
+      notes: sanitizeTextList((current as Record<string, unknown>).notes, 8, 220),
+      confidence:
+        typeof confidenceValue === 'number' && Number.isFinite(confidenceValue)
+          ? Math.max(0, Math.min(1, confidenceValue))
+          : 1
+    }
+  }
+
+  return next
 }
 
 function toStoredSession(row: DatabaseWorkoutSessionRow): StoredSession {
@@ -169,6 +270,34 @@ function toStoredSession(row: DatabaseWorkoutSessionRow): StoredSession {
     notes: parseNotesJson(row.notes),
     totalSets: row.total_sets,
     repsPerSet: row.reps_per_set
+  }
+}
+
+function parseFmsPatternsJson(value: string): FmsPatternMap | null {
+  try {
+    return parseFmsPatternMap(JSON.parse(value) as unknown)
+  } catch {
+    return null
+  }
+}
+
+function toStoredFmsSession(row: DatabaseFmsSessionRow): StoredFmsSession | null {
+  const patterns = parseFmsPatternsJson(row.patterns_json)
+  if (!patterns) return null
+
+  return {
+    sessionId: row.id,
+    startedAt: new Date(row.started_at).toISOString(),
+    completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : undefined,
+    status: row.status,
+    disclaimerAccepted: row.disclaimer_accepted === 1,
+    sexForTSPU: parseSexForTSPU(row.sex_for_tspu),
+    equipmentConfirmed: row.equipment_confirmed === 1,
+    patterns,
+    totalScore: typeof row.total_score === 'number' ? row.total_score : undefined,
+    anyPain: row.any_pain === 1,
+    anyAsymmetry: row.any_asymmetry === 1,
+    notes: parseNotesJson(row.notes_json)
   }
 }
 
@@ -250,7 +379,7 @@ function findSessionUser(token: string | null): { user: AuthUser; userId: string
 
   const row = get<DatabaseAuthSessionRow>(
     `
-      select users.id, auth_sessions.user_id, users.name, users.email, users.created_at
+      select users.id, auth_sessions.user_id, users.name, users.email, users.created_at, users.sex_for_tspu
       from auth_sessions
       inner join users on users.id = auth_sessions.user_id
       where auth_sessions.token_hash = ?
@@ -291,13 +420,7 @@ function parseSessionDraft(value: unknown): SessionDraft | null {
   if (!value || typeof value !== 'object') return null
 
   const payload = value as Record<string, unknown>
-  const notes = Array.isArray(payload.notes)
-    ? payload.notes
-        .map((item) => String(item).trim())
-        .filter((item) => item !== '')
-        .slice(0, 6)
-        .map((item) => item.slice(0, 180))
-    : []
+  const notes = sanitizeTextList(payload.notes, 6, 180)
 
   const numericKeys = [
     'durationSeconds',
@@ -337,6 +460,45 @@ function parseSessionDraft(value: unknown): SessionDraft | null {
     notes,
     totalSets: Math.max(1, Math.round(totalSets)),
     repsPerSet: Math.max(1, Math.round(repsPerSet))
+  }
+}
+
+function parseFmsSessionDraft(value: unknown): FmsSessionDraft | null {
+  if (!value || typeof value !== 'object') return null
+
+  const payload = value as Record<string, unknown>
+  const status = parseFmsSessionStatus(payload.status)
+  const sexForTSPU = parseSexForTSPU(payload.sexForTSPU)
+  const patterns = parseFmsPatternMap(payload.patterns)
+
+  if (!status || !patterns) return null
+  if (typeof payload.startedAt !== 'string' || Number.isNaN(Date.parse(payload.startedAt))) return null
+  if (
+    payload.completedAt !== undefined &&
+    (typeof payload.completedAt !== 'string' || Number.isNaN(Date.parse(payload.completedAt)))
+  ) {
+    return null
+  }
+  if (typeof payload.disclaimerAccepted !== 'boolean') return null
+  if (typeof payload.equipmentConfirmed !== 'boolean') return null
+  if (typeof payload.anyPain !== 'boolean') return null
+  if (typeof payload.anyAsymmetry !== 'boolean') return null
+  if (payload.totalScore !== undefined && (typeof payload.totalScore !== 'number' || !Number.isFinite(payload.totalScore))) {
+    return null
+  }
+
+  return {
+    startedAt: payload.startedAt,
+    completedAt: typeof payload.completedAt === 'string' ? payload.completedAt : undefined,
+    status,
+    disclaimerAccepted: payload.disclaimerAccepted,
+    sexForTSPU,
+    equipmentConfirmed: payload.equipmentConfirmed,
+    patterns,
+    totalScore: typeof payload.totalScore === 'number' ? Math.max(0, Math.min(21, Math.round(payload.totalScore))) : undefined,
+    anyPain: payload.anyPain,
+    anyAsymmetry: payload.anyAsymmetry,
+    notes: sanitizeTextList(payload.notes, 10, 220)
   }
 }
 
@@ -431,6 +593,7 @@ function escapeHtml(value: string): string {
 }
 
 function humanizePageName(value: TrackedPageName): string {
+  if (value === 'fms') return 'FMS'
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
@@ -470,7 +633,7 @@ async function loadDashboardData(): Promise<{
   userMetrics: DashboardUserMetricRow[]
   recentWorkouts: DashboardRecentWorkoutRow[]
 }> {
-  const users = all<DatabaseUserRow>(`select id, name, email, created_at from users`)
+  const users = all<DatabaseUserRow>(`select id, name, email, created_at, sex_for_tspu from users`)
   const workouts = all<DatabaseWorkoutSessionRow>(
     `
       select
@@ -1003,7 +1166,8 @@ function ensureSchema(): void {
       name text not null,
       email text not null unique,
       password_hash text not null,
-      created_at text not null
+      created_at text not null,
+      sex_for_tspu text not null default 'unspecified'
     );
 
     create table if not exists auth_sessions (
@@ -1036,10 +1200,28 @@ function ensureSchema(): void {
       user_id text not null references users(id) on delete cascade,
       user_email text not null,
       browser_session_id text not null,
-      page_name text not null check (page_name in ('home', 'details', 'live', 'results', 'profile')),
+      page_name text not null,
       entered_at text not null,
       exited_at text not null,
       duration_ms integer not null check (duration_ms >= 0),
+      created_at text not null
+    );
+
+    create table if not exists fms_sessions (
+      id text primary key,
+      user_id text not null references users(id) on delete cascade,
+      user_email text not null,
+      started_at text not null,
+      completed_at text,
+      status text not null check (status in ('in_progress', 'completed', 'stopped_pain', 'incomplete')),
+      disclaimer_accepted integer not null check (disclaimer_accepted in (0, 1)),
+      sex_for_tspu text not null default 'unspecified',
+      equipment_confirmed integer not null check (equipment_confirmed in (0, 1)),
+      patterns_json text not null,
+      total_score integer,
+      any_pain integer not null check (any_pain in (0, 1)),
+      any_asymmetry integer not null check (any_asymmetry in (0, 1)),
+      notes_json text not null default '[]',
       created_at text not null
     );
 
@@ -1048,7 +1230,43 @@ function ensureSchema(): void {
     create index if not exists workout_sessions_user_id_completed_idx on workout_sessions (user_id, completed_at desc);
     create index if not exists page_visits_user_id_exited_idx on page_visits (user_id, exited_at desc);
     create index if not exists page_visits_page_name_exited_idx on page_visits (page_name, exited_at desc);
+    create index if not exists fms_sessions_user_id_started_idx on fms_sessions (user_id, started_at desc);
+    create index if not exists fms_sessions_status_completed_idx on fms_sessions (status, completed_at desc);
   `)
+
+  const userColumns = all<{ name: string }>(`pragma table_info(users)`)
+  if (!userColumns.some((column) => column.name === 'sex_for_tspu')) {
+    run(`alter table users add column sex_for_tspu text not null default 'unspecified'`)
+  }
+
+  const pageVisitSql = get<{ sql: string | null }>(
+    `select sql from sqlite_master where type = 'table' and name = 'page_visits' limit 1`
+  )?.sql
+
+  if (typeof pageVisitSql === 'string' && pageVisitSql.includes('check (page_name in')) {
+    exec(`
+      begin transaction;
+      create table if not exists page_visits_migrated (
+        id text primary key,
+        user_id text not null references users(id) on delete cascade,
+        user_email text not null,
+        browser_session_id text not null,
+        page_name text not null,
+        entered_at text not null,
+        exited_at text not null,
+        duration_ms integer not null check (duration_ms >= 0),
+        created_at text not null
+      );
+      insert into page_visits_migrated (id, user_id, user_email, browser_session_id, page_name, entered_at, exited_at, duration_ms, created_at)
+      select id, user_id, user_email, browser_session_id, page_name, entered_at, exited_at, duration_ms, created_at
+      from page_visits;
+      drop table page_visits;
+      alter table page_visits_migrated rename to page_visits;
+      create index if not exists page_visits_user_id_exited_idx on page_visits (user_id, exited_at desc);
+      create index if not exists page_visits_page_name_exited_idx on page_visits (page_name, exited_at desc);
+      commit;
+    `)
+  }
 
   cleanupExpiredSessions()
 }
@@ -1129,6 +1347,7 @@ app.post(
     const name = typeof request.body?.name === 'string' ? request.body.name.trim() : ''
     const email = typeof request.body?.email === 'string' ? normalizeEmail(request.body.email) : ''
     const password = typeof request.body?.password === 'string' ? request.body.password : ''
+    const sexForTSPU = parseSexForTSPU(request.body?.sexForTSPU)
 
     if (name.length < 2 || name.length > 80) {
       response.status(400).json({ message: 'Name must be between 2 and 80 characters.' })
@@ -1145,6 +1364,11 @@ app.post(
       return
     }
 
+    if (sexForTSPU === 'unspecified') {
+      response.status(400).json({ message: 'Sex is required for the FMS setup.' })
+      return
+    }
+
     const existing = get<{ id: string }>(`select id from users where email = ? limit 1`, [email])
     if (existing) {
       response.status(409).json({ message: 'An account with that email already exists.' })
@@ -1157,14 +1381,14 @@ app.post(
 
     run(
       `
-        insert into users (id, name, email, password_hash, created_at)
-        values (?, ?, ?, ?, ?)
+        insert into users (id, name, email, password_hash, created_at, sex_for_tspu)
+        values (?, ?, ?, ?, ?, ?)
       `,
-      [userId, name, email, passwordHash, createdAt]
+      [userId, name, email, passwordHash, createdAt, sexForTSPU]
     )
 
     const userRow = get<DatabaseUserRow>(
-      `select id, name, email, created_at from users where id = ? limit 1`,
+      `select id, name, email, created_at, sex_for_tspu from users where id = ? limit 1`,
       [userId]
     )
 
@@ -1191,7 +1415,7 @@ app.post(
     }
 
     const row = get<DatabaseUserRow>(
-      `select id, name, email, created_at, password_hash from users where email = ? limit 1`,
+      `select id, name, email, created_at, sex_for_tspu, password_hash from users where email = ? limit 1`,
       [email]
     )
 
@@ -1202,6 +1426,42 @@ app.post(
 
     const token = await createAuthSession(row.id)
     setSessionCookie(response, token)
+    response.json({ ok: true, user: toAuthUser(row) })
+  })
+)
+
+app.patch(
+  '/api/profile',
+  loadAuthUser,
+  asyncHandler(async (request, response) => {
+    if (!requireAuth(request, response)) return
+
+    const authRequest = request as AuthenticatedRequest
+    const authUserId = authRequest.authUserId
+    const sexForTSPU = parseSexForTSPU(request.body?.sexForTSPU)
+
+    if (!authUserId) {
+      response.status(401).json({ message: 'Authentication required.' })
+      return
+    }
+
+    if (sexForTSPU === 'unspecified') {
+      response.status(400).json({ message: 'Select male or female to save the FMS setup.' })
+      return
+    }
+
+    run(`update users set sex_for_tspu = ? where id = ?`, [sexForTSPU, authUserId])
+
+    const row = get<DatabaseUserRow>(
+      `select id, name, email, created_at, sex_for_tspu from users where id = ? limit 1`,
+      [authUserId]
+    )
+
+    if (!row) {
+      response.status(500).json({ message: 'Profile update did not complete.' })
+      return
+    }
+
     response.json({ ok: true, user: toAuthUser(row) })
   })
 )
@@ -1362,6 +1622,126 @@ app.post(
     }
 
     response.status(201).json({ session: toStoredSession(row) })
+  })
+)
+
+app.get(
+  '/api/fms/history',
+  loadAuthUser,
+  asyncHandler(async (request, response) => {
+    if (!requireAuth(request, response)) return
+
+    const authRequest = request as AuthenticatedRequest
+    const authUserId = authRequest.authUserId
+
+    if (!authUserId) {
+      response.status(401).json({ message: 'Authentication required.' })
+      return
+    }
+
+    const rows = all<DatabaseFmsSessionRow>(
+      `
+        select
+          id, user_id, user_email, started_at, completed_at, status, disclaimer_accepted, sex_for_tspu,
+          equipment_confirmed, patterns_json, total_score, any_pain, any_asymmetry, notes_json, created_at
+        from fms_sessions
+        where user_id = ?
+        order by started_at desc
+      `,
+      [authUserId]
+    )
+
+    response.json({ sessions: rows.map((row) => toStoredFmsSession(row)).filter((row): row is StoredFmsSession => row !== null) })
+  })
+)
+
+app.post(
+  '/api/fms/history',
+  loadAuthUser,
+  asyncHandler(async (request, response) => {
+    if (!requireAuth(request, response)) return
+
+    const authRequest = request as AuthenticatedRequest
+    const authUser = authRequest.authUser
+    const authUserId = authRequest.authUserId
+
+    if (!authUser || !authUserId) {
+      response.status(401).json({ message: 'Authentication required.' })
+      return
+    }
+
+    const sessionDraft = parseFmsSessionDraft(request.body)
+
+    if (!sessionDraft) {
+      response.status(400).json({ message: 'FMS payload is invalid.' })
+      return
+    }
+
+    const effectiveSex = authUser.sexForTSPU === 'unspecified' ? sessionDraft.sexForTSPU : authUser.sexForTSPU
+
+    if (effectiveSex === 'unspecified') {
+      response.status(400).json({ message: 'Sex must be saved before starting the FMS flow.' })
+      return
+    }
+
+    if (sessionDraft.status === 'completed' && sessionDraft.totalScore === undefined) {
+      response.status(400).json({ message: 'Completed FMS sessions must include a total score.' })
+      return
+    }
+
+    const sessionId = randomUUID()
+    const completedAt =
+      sessionDraft.status === 'completed' || sessionDraft.status === 'stopped_pain' || sessionDraft.status === 'incomplete'
+        ? sessionDraft.completedAt ?? nowIso()
+        : sessionDraft.completedAt
+
+    run(
+      `
+        insert into fms_sessions (
+          id, user_id, user_email, started_at, completed_at, status, disclaimer_accepted, sex_for_tspu,
+          equipment_confirmed, patterns_json, total_score, any_pain, any_asymmetry, notes_json, created_at
+        )
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        sessionId,
+        authUserId,
+        authUser.email,
+        sessionDraft.startedAt,
+        completedAt ?? null,
+        sessionDraft.status,
+        sessionDraft.disclaimerAccepted ? 1 : 0,
+        effectiveSex,
+        sessionDraft.equipmentConfirmed ? 1 : 0,
+        JSON.stringify(sessionDraft.patterns),
+        sessionDraft.status === 'completed' ? sessionDraft.totalScore ?? null : null,
+        sessionDraft.anyPain ? 1 : 0,
+        sessionDraft.anyAsymmetry ? 1 : 0,
+        JSON.stringify(sessionDraft.notes),
+        nowIso()
+      ]
+    )
+
+    const row = get<DatabaseFmsSessionRow>(
+      `
+        select
+          id, user_id, user_email, started_at, completed_at, status, disclaimer_accepted, sex_for_tspu,
+          equipment_confirmed, patterns_json, total_score, any_pain, any_asymmetry, notes_json, created_at
+        from fms_sessions
+        where id = ?
+        limit 1
+      `,
+      [sessionId]
+    )
+
+    const stored = row ? toStoredFmsSession(row) : null
+
+    if (!stored) {
+      response.status(500).json({ message: 'FMS session save did not complete.' })
+      return
+    }
+
+    response.status(201).json({ session: stored })
   })
 )
 

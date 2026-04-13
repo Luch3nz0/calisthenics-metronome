@@ -1,5 +1,6 @@
 import { squatTraining } from './session-data.js'
 import {
+  getFmsSessionsForUser,
   getActiveUser,
   getProfileStats,
   getSessionsForUser,
@@ -7,22 +8,45 @@ import {
   logoutUser,
   recordPageVisit,
   registerUser,
+  saveFmsSession,
   saveSession,
+  updateSexForTSPU,
   type PageVisitDraft,
   type StoredSession,
   type AuthUser,
-  type SessionDraft
+  type FmsSessionDraft,
+  type SexForTSPU,
+  type SessionDraft,
+  type StoredFmsSession
 } from './storage.js'
+import {
+  computeFmsOutcome,
+  createEmptyFmsPatterns,
+  createFmsTasks,
+  fmsDisclaimer,
+  fmsEquipmentNotes,
+  fmsOpeningVoice,
+  fmsRequiredEquipment,
+  fmsVoiceDisclaimer,
+  getFmsPatternName,
+  type FmsTask
+} from './fms-data.js'
 import { SquatSessionEngine, type EngineSnapshot, type PoseLandmark } from './squat-engine.js'
 import { VoiceCoach } from './voice-coach.js'
 
-type ScreenKey = 'auth' | 'home' | 'details' | 'live' | 'results' | 'profile'
+type ScreenKey = 'auth' | 'home' | 'fms' | 'details' | 'live' | 'results' | 'profile'
 type TrackedScreenKey = Exclude<ScreenKey, 'auth'>
 type AuthMode = 'signup' | 'login'
 type ActivePageVisit = {
   screen: TrackedScreenKey
   enteredAt: string
   startedAtMs: number
+}
+
+type FmsState = {
+  draft: FmsSessionDraft | null
+  currentTaskIndex: number
+  latestSession: StoredFmsSession | null
 }
 
 type LiveState = {
@@ -61,9 +85,11 @@ const state: {
   authMode: AuthMode
   activeUser: AuthUser | null
   sessions: StoredSession[]
+  fmsSessions: StoredFmsSession[]
   latestSession: StoredSession | null
   bootstrapping: boolean
   live: LiveState
+  fms: FmsState
   analytics: {
     currentVisit: ActivePageVisit | null
     browserSessionId: string
@@ -73,6 +99,7 @@ const state: {
   authMode: 'signup',
   activeUser: null,
   sessions: [],
+  fmsSessions: [],
   latestSession: null,
   bootstrapping: true,
   live: {
@@ -87,6 +114,11 @@ const state: {
     pausedDurationMs: 0,
     snapshot: null,
     completionHandled: false
+  },
+  fms: {
+    draft: null,
+    currentTaskIndex: 0,
+    latestSession: null
   },
   analytics: {
     currentVisit: null,
@@ -113,7 +145,9 @@ const els = {
   authTitle: byId<HTMLElement>('auth-title'),
   authHelper: byId<HTMLElement>('auth-helper'),
   authNameRow: byId<HTMLElement>('auth-name-row'),
+  authSexRow: byId<HTMLElement>('auth-sex-row'),
   authNameInput: byId<HTMLInputElement>('auth-name-input'),
+  authSexSelect: byId<HTMLSelectElement>('auth-sex-select'),
   authEmailInput: byId<HTMLInputElement>('auth-email-input'),
   authPasswordInput: byId<HTMLInputElement>('auth-password-input'),
   authSubmitBtn: byId<HTMLButtonElement>('auth-submit-btn'),
@@ -129,7 +163,14 @@ const els = {
   homeTotalSessions: byId<HTMLElement>('home-total-sessions'),
   coachCard: byId<HTMLButtonElement>('coach-card'),
   homeNavHome: byId<HTMLButtonElement>('home-nav-home'),
+  homeNavFms: byId<HTMLButtonElement>('home-nav-fms'),
   homeNavProfile: byId<HTMLButtonElement>('home-nav-profile'),
+  fmsHomeBtn: byId<HTMLButtonElement>('fms-home-btn'),
+  fmsProfileBtn: byId<HTMLButtonElement>('fms-profile-btn'),
+  fmsRoot: byId<HTMLElement>('fms-root'),
+  fmsNavHome: byId<HTMLButtonElement>('fms-nav-home'),
+  fmsNavFms: byId<HTMLButtonElement>('fms-nav-fms'),
+  fmsNavProfile: byId<HTMLButtonElement>('fms-nav-profile'),
   detailsBackBtn: byId<HTMLButtonElement>('details-back-btn'),
   detailsCoachName: byId<HTMLElement>('details-coach-name'),
   detailsCoachRole: byId<HTMLElement>('details-coach-role'),
@@ -168,6 +209,7 @@ const els = {
   profilePostureScore: byId<HTMLElement>('profile-posture-score'),
   historyList: byId<HTMLElement>('history-list'),
   profileNavHome: byId<HTMLButtonElement>('profile-nav-home'),
+  profileNavFms: byId<HTMLButtonElement>('profile-nav-fms'),
   profileNavProfile: byId<HTMLButtonElement>('profile-nav-profile')
 }
 
@@ -190,9 +232,111 @@ function formatDate(value: string): string {
   }).format(new Date(value))
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+function formatFmsStatus(status: StoredFmsSession['status']): string {
+  if (status === 'completed') return 'Completed'
+  if (status === 'stopped_pain') return 'Stopped for pain'
+  if (status === 'incomplete') return 'Incomplete'
+  return 'In progress'
+}
+
+function sexForFms(user: AuthUser | null): SexForTSPU {
+  return user?.sexForTSPU ?? 'unspecified'
+}
+
+function buildFmsPatternFinalScore(
+  patternKey: keyof FmsSessionDraft['patterns'],
+  pattern: FmsSessionDraft['patterns'][keyof FmsSessionDraft['patterns']]
+): 0 | 1 | 2 | 3 | undefined {
+  if (pattern.pain || pattern.clearingPain) return 0
+
+  if (patternKey === 'deepSquat' || patternKey === 'trunkStabilityPushUp') {
+    return pattern.rawRight
+  }
+
+  if (pattern.rawLeft === undefined || pattern.rawRight === undefined) {
+    return undefined
+  }
+
+  return Math.min(pattern.rawLeft, pattern.rawRight) as 0 | 1 | 2 | 3
+}
+
+function cloneFmsDraft(draft: FmsSessionDraft): FmsSessionDraft {
+  return {
+    ...draft,
+    notes: [...draft.notes],
+    patterns: structuredClone(draft.patterns)
+  }
+}
+
+function collectFmsSessionNotes(draft: FmsSessionDraft): string[] {
+  const outcome = computeFmsOutcome(draft.patterns)
+  const notes = new Set<string>()
+
+  if (outcome.anyPain) {
+    notes.add('Pain was reported during at least one movement or clearing test.')
+  }
+
+  if (outcome.anyAsymmetry) {
+    notes.add('Asymmetry was detected between right and left scores in at least one bilateral pattern.')
+  }
+
+  for (const patternKey of outcome.lowestPatterns) {
+    notes.add(`${getFmsPatternName(patternKey)} was one of the lowest-scoring patterns.`)
+  }
+
+  for (const patternKey of Object.keys(draft.patterns) as Array<keyof FmsSessionDraft['patterns']>) {
+    for (const note of draft.patterns[patternKey].notes) {
+      notes.add(note)
+    }
+  }
+
+  return Array.from(notes).slice(0, 10)
+}
+
+function recalculateFmsDraft(draft: FmsSessionDraft): FmsSessionDraft {
+  const next = cloneFmsDraft(draft)
+
+  for (const patternKey of Object.keys(next.patterns) as Array<keyof FmsSessionDraft['patterns']>) {
+    next.patterns[patternKey].finalScore = buildFmsPatternFinalScore(patternKey, next.patterns[patternKey])
+  }
+
+  const outcome = computeFmsOutcome(next.patterns)
+  next.anyPain = outcome.anyPain
+  next.anyAsymmetry = outcome.anyAsymmetry
+  next.totalScore = outcome.complete ? outcome.totalScore : undefined
+  next.notes = collectFmsSessionNotes(next)
+  return next
+}
+
+function createNewFmsDraft(user: AuthUser, disclaimerAccepted: boolean, equipmentConfirmed: boolean): FmsSessionDraft {
+  return {
+    startedAt: new Date().toISOString(),
+    status: 'in_progress',
+    disclaimerAccepted,
+    sexForTSPU: user.sexForTSPU,
+    equipmentConfirmed,
+    patterns: createEmptyFmsPatterns(),
+    totalScore: undefined,
+    anyPain: false,
+    anyAsymmetry: false,
+    notes: []
+  }
+}
+
 async function refreshUserData(): Promise<void> {
   state.activeUser = await getActiveUser()
   state.sessions = state.activeUser ? await getSessionsForUser() : []
+  state.fmsSessions = state.activeUser ? await getFmsSessionsForUser() : []
+  state.fms.latestSession = state.fmsSessions[0] ?? null
 
   if (!state.activeUser) {
     state.analytics.currentVisit = null
@@ -282,6 +426,7 @@ function renderAuth(): void {
     ? 'Create a secure account so your squat sessions and history sync to the backend.'
     : 'Log in to continue your saved squat history and profile progress.'
   els.authNameRow.hidden = !isSignup
+  els.authSexRow.hidden = !isSignup
   els.authSubmitBtn.textContent = isSignup ? 'Create account' : 'Log in'
   els.authSwitchCopy.textContent = isSignup ? 'Already have an account?' : 'Need an account instead?'
   els.authSwitchBtn.textContent = isSignup ? 'Log in' : 'Create one'
@@ -389,6 +534,459 @@ function renderProfile(): void {
   }
 }
 
+function buildFmsHistoryMarkup(): string {
+  if (state.fmsSessions.length === 0) {
+    return '<p class="history-empty">No FMS sessions saved yet. Complete the guided screen to build a movement-screen history.</p>'
+  }
+
+  return state.fmsSessions
+    .slice(0, 5)
+    .map((session) => {
+      const totalScoreMarkup =
+        session.status === 'completed' && typeof session.totalScore === 'number'
+          ? `<span class="history-meta">Total ${session.totalScore} / 21</span>`
+          : `<span class="history-meta">${escapeHtml(formatFmsStatus(session.status))}</span>`
+
+      return `
+        <article class="history-entry">
+          <div class="history-row">
+            <strong>${escapeHtml(formatDate(session.startedAt))}</strong>
+            ${totalScoreMarkup}
+          </div>
+          <div class="history-row history-meta">
+            <span>${session.anyPain ? 'Pain present' : 'No pain reported'}</span>
+            <span>${session.anyAsymmetry ? 'Asymmetry present' : 'Symmetry preserved'}</span>
+          </div>
+        </article>
+      `
+    })
+    .join('')
+}
+
+function buildFmsSummaryMarkup(session: StoredFmsSession): string {
+  const patternMarkup = Object.entries(session.patterns)
+    .map(([patternKey, pattern]) => {
+      const scoreLabel = pattern.finalScore === undefined ? 'Pending' : String(pattern.finalScore)
+      const flags = [
+        pattern.pain ? 'Pain' : '',
+        pattern.clearingPain ? 'Clearing pain' : '',
+        pattern.rawLeft !== undefined && pattern.rawRight !== undefined && pattern.rawLeft !== pattern.rawRight
+          ? 'Asymmetry'
+          : ''
+      ]
+        .filter((item) => item !== '')
+        .join(' · ')
+
+      return `
+        <div class="fms-pattern-row">
+          <span>${escapeHtml(getFmsPatternName(patternKey as keyof StoredFmsSession['patterns']))}</span>
+          <strong>${escapeHtml(scoreLabel)}</strong>
+          <small>${escapeHtml(flags || 'No flags')}</small>
+        </div>
+      `
+    })
+    .join('')
+
+  const summaryLead =
+    session.status === 'completed' && typeof session.totalScore === 'number'
+      ? `Total score ${session.totalScore} / 21`
+      : formatFmsStatus(session.status)
+
+  return `
+    <div class="card fms-summary-card">
+      <div class="section-head">
+        <p class="eyebrow">Latest result</p>
+        <h2>${escapeHtml(summaryLead)}</h2>
+        <p class="section-copy">
+          ${session.anyPain ? 'Pain was reported, so this result should not be treated as a diagnosis.' : 'Use the lowest-scoring patterns and any asymmetry as the main review points.'}
+        </p>
+      </div>
+      <div class="fms-pattern-grid">
+        ${patternMarkup}
+      </div>
+    </div>
+  `
+}
+
+function renderFms(): void {
+  const user = state.activeUser
+  if (!user) return
+
+  const latestFmsSession = state.fms.latestSession ?? state.fmsSessions[0] ?? null
+  const draft = state.fms.draft
+  const currentSex = draft?.sexForTSPU ?? sexForFms(user)
+  const tasks = createFmsTasks(currentSex)
+  const task = draft ? tasks[state.fms.currentTaskIndex] : null
+  const progressLabel = task ? `Step ${state.fms.currentTaskIndex + 1} of ${tasks.length}` : 'Before you start'
+  const latestSummaryMarkup = latestFmsSession ? buildFmsSummaryMarkup(latestFmsSession) : ''
+
+  if (!draft) {
+    const sexPromptMarkup =
+      currentSex === 'unspecified'
+        ? `
+            <div class="card fms-card">
+              <div class="section-head">
+                <p class="eyebrow">Profile requirement</p>
+                <h2>Save the sex used for the push-up rule</h2>
+                <p class="section-copy">
+                  The Trunk Stability Push-Up uses different official hand positions for male and female standards. This is saved to the profile for scoring, but it is not shown on the visible profile screen.
+                </p>
+              </div>
+              <label class="field">
+                <span>Sex used for the FMS standard</span>
+                <select id="fms-sex-select">
+                  <option value="">Select one</option>
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                </select>
+              </label>
+              <div class="action-bar">
+                <button class="primary-button" data-fms-action="save-sex" type="button">Save to profile</button>
+              </div>
+            </div>
+          `
+        : ''
+
+    els.fmsRoot.innerHTML = `
+      <div class="card splash-card">
+        <p class="eyebrow">Functional Movement Screen</p>
+        <h1>Run the seven-pattern FMS in a fixed order.</h1>
+        <p class="section-copy">
+          Guided voice prompts, manual scoring, pain flags, and saved history for Deep Squat, Hurdle Step, Inline Lunge, Shoulder Mobility, Active Straight-Leg Raise, Trunk Stability Push-Up, and Rotary Stability.
+        </p>
+        <div class="hero-badges">
+          <span class="pill">7 patterns</span>
+          <span class="pill">Fixed order</span>
+          <span class="pill">Pain aware</span>
+        </div>
+      </div>
+
+      ${sexPromptMarkup}
+
+      <div class="card fms-card">
+        <div class="section-head">
+          <p class="eyebrow">Safety</p>
+          <h2>Mandatory disclaimer</h2>
+          <p class="section-copy">${escapeHtml(fmsDisclaimer)}</p>
+        </div>
+        <label class="checkbox-row">
+          <input id="fms-disclaimer-checkbox" type="checkbox">
+          <span>I understand that this is a screening tool and not a diagnosis.</span>
+        </label>
+      </div>
+
+      <div class="card fms-card">
+        <div class="section-head">
+          <p class="eyebrow">Equipment</p>
+          <h2>Prepare the full setup first</h2>
+        </div>
+        <ul class="bullet-list">
+          ${fmsRequiredEquipment.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
+        </ul>
+        <div class="fms-note-stack">
+          ${fmsEquipmentNotes.map((item) => `<p class="results-note">${escapeHtml(item)}</p>`).join('')}
+        </div>
+        <label class="checkbox-row">
+          <input id="fms-equipment-checkbox" type="checkbox">
+          <span>All required equipment is ready and visible enough for the test.</span>
+        </label>
+      </div>
+
+      <div class="action-bar">
+        <button class="primary-button" data-fms-action="start" type="button">Start FMS</button>
+      </div>
+
+      ${latestSummaryMarkup}
+
+      <div class="card history-card">
+        <div class="section-head tight">
+          <p class="eyebrow">FMS history</p>
+          <h2>Recent screens</h2>
+        </div>
+        <div>${buildFmsHistoryMarkup()}</div>
+      </div>
+    `
+
+    return
+  }
+
+  if (!task) {
+    els.fmsRoot.innerHTML = latestSummaryMarkup
+    return
+  }
+
+  const taskTitle = `${task.patternName}${task.side ? ` · ${task.side}` : ''}`
+  const scoreOptionsMarkup =
+    task.kind === 'movement'
+      ? task.scoreOptions
+          .map(
+            (option) => `
+              <label class="fms-score-option">
+                <input type="radio" name="fms-score" value="${option.value}">
+                <span>
+                  <strong>${escapeHtml(option.label)}</strong>
+                  <small>${escapeHtml(option.description)}</small>
+                </span>
+              </label>
+            `
+          )
+          .join('')
+      : '<p class="section-copy">This clearing step only records whether pain is present.</p>'
+
+  els.fmsRoot.innerHTML = `
+    <div class="card fms-card">
+      <div class="section-head">
+        <p class="eyebrow">${escapeHtml(progressLabel)}</p>
+        <h2>${escapeHtml(taskTitle)}</h2>
+        <p class="section-copy">
+          ${escapeHtml(task.cameraView)}. ${task.kind === 'movement' ? 'Score the movement after the attempt.' : 'Run the clearing test and report pain if it appears.'}
+        </p>
+      </div>
+      <div class="hero-badges">
+        ${task.equipment.map((item) => `<span class="pill">${escapeHtml(item)}</span>`).join('')}
+      </div>
+      <ul class="bullet-list">
+        ${task.instructions.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
+      </ul>
+      <div class="action-bar">
+        <button class="secondary-button" data-fms-action="voice" type="button">Read instructions aloud</button>
+      </div>
+    </div>
+
+    <div class="card fms-card">
+      <div class="section-head">
+        <p class="eyebrow">Scoring</p>
+        <h2>${task.kind === 'movement' ? 'Choose the closest score' : 'Clearing test result'}</h2>
+        <p class="section-copy">${escapeHtml(task.painPrompt)}</p>
+      </div>
+      <div class="fms-score-list">
+        ${scoreOptionsMarkup}
+      </div>
+      <label class="checkbox-row">
+        <input id="fms-pain-checkbox" type="checkbox">
+        <span>Pain was present during this step.</span>
+      </label>
+      <label class="field">
+        <span>Notes</span>
+        <textarea id="fms-note-input" rows="4" placeholder="Optional notes about balance loss, compensation, asymmetry, or setup issues."></textarea>
+      </label>
+    </div>
+
+    ${latestSummaryMarkup}
+
+    <div class="action-bar">
+      <button class="secondary-button" data-fms-action="quit" type="button">Save and stop</button>
+      <button class="primary-button" data-fms-action="advance" type="button">${state.fms.currentTaskIndex === tasks.length - 1 ? 'Finish FMS' : 'Next step'}</button>
+    </div>
+  `
+}
+
+function getCurrentFmsTask(): FmsTask | null {
+  const user = state.activeUser
+  const draft = state.fms.draft
+
+  if (!user || !draft) return null
+
+  return createFmsTasks(draft.sexForTSPU ?? user.sexForTSPU)[state.fms.currentTaskIndex] ?? null
+}
+
+function appendPatternNote(
+  pattern: FmsSessionDraft['patterns'][keyof FmsSessionDraft['patterns']],
+  note: string
+): void {
+  const trimmed = note.trim()
+  if (trimmed === '') return
+
+  pattern.notes = Array.from(new Set([...pattern.notes, trimmed.slice(0, 220)])).slice(0, 8)
+}
+
+function applyFmsTaskResult(
+  draft: FmsSessionDraft,
+  task: FmsTask,
+  score: 1 | 2 | 3 | null,
+  pain: boolean,
+  note: string
+): FmsSessionDraft {
+  const next = cloneFmsDraft(draft)
+  const pattern = next.patterns[task.patternKey]
+
+  if (task.kind === 'movement') {
+    if (score === null) {
+      throw new Error('A score is required for this movement.')
+    }
+
+    if (task.side === 'left') {
+      pattern.rawLeft = pain ? 0 : score
+    } else {
+      pattern.rawRight = pain ? 0 : score
+    }
+
+    if (pain) {
+      pattern.pain = true
+    }
+  } else if (pain) {
+    pattern.clearingPain = true
+  }
+
+  if (pain) {
+    appendPatternNote(pattern, `${task.patternName}: pain reported.`)
+  }
+
+  if (note.trim() !== '') {
+    appendPatternNote(pattern, task.side ? `${task.side}: ${note.trim()}` : note.trim())
+  }
+
+  return recalculateFmsDraft(next)
+}
+
+async function persistFmsDraft(nextDraft: FmsSessionDraft): Promise<boolean> {
+  try {
+    voiceCoach.stop()
+    const saved = await saveFmsSession(nextDraft)
+    state.fms.latestSession = saved
+    await refreshUserData()
+    state.fms.draft = null
+    state.fms.currentTaskIndex = 0
+    setActiveScreen('fms')
+    renderApp()
+    return true
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : 'The FMS session could not be saved to the backend.')
+    return false
+  }
+}
+
+async function saveAndExitFms(status: Exclude<StoredFmsSession['status'], 'in_progress'>): Promise<void> {
+  const draft = state.fms.draft
+  if (!draft) return
+
+  const next = recalculateFmsDraft(cloneFmsDraft(draft))
+  next.status = status
+  next.completedAt = new Date().toISOString()
+
+  if (status !== 'completed') {
+    next.totalScore = undefined
+  }
+
+  await persistFmsDraft(next)
+}
+
+async function startFmsFlow(): Promise<void> {
+  const user = state.activeUser
+  if (!user) return
+
+  if (user.sexForTSPU === 'unspecified') {
+    window.alert('Save the sex used for the Trunk Stability Push-Up standard before starting the FMS flow.')
+    return
+  }
+
+  const disclaimerAccepted = document.querySelector<HTMLInputElement>('#fms-disclaimer-checkbox')?.checked ?? false
+  const equipmentConfirmed = document.querySelector<HTMLInputElement>('#fms-equipment-checkbox')?.checked ?? false
+
+  if (!disclaimerAccepted) {
+    window.alert('You must accept the screening disclaimer before starting.')
+    return
+  }
+
+  if (!equipmentConfirmed) {
+    window.alert('Confirm the equipment setup before starting.')
+    return
+  }
+
+  state.fms.draft = createNewFmsDraft(user, disclaimerAccepted, equipmentConfirmed)
+  state.fms.currentTaskIndex = 0
+  renderApp()
+
+  voiceCoach.stop()
+  voiceCoach.speak({
+    key: 'fms-opening',
+    message: `${fmsVoiceDisclaimer} ${fmsOpeningVoice}`,
+    interrupt: true,
+    minIntervalMs: 0
+  })
+}
+
+async function saveFmsProfileSex(): Promise<void> {
+  const select = document.querySelector<HTMLSelectElement>('#fms-sex-select')
+  const value = select?.value === 'male' || select?.value === 'female' ? select.value : null
+
+  if (!value) {
+    window.alert('Select male or female to save the FMS setup.')
+    return
+  }
+
+  const result = await updateSexForTSPU(value)
+  if (!result.ok) {
+    window.alert(result.message ?? 'Could not update the profile.')
+    return
+  }
+
+  await refreshUserData()
+  renderApp()
+}
+
+async function advanceFmsFlow(): Promise<void> {
+  const draft = state.fms.draft
+  const task = getCurrentFmsTask()
+
+  if (!draft || !task) return
+
+  const pain = document.querySelector<HTMLInputElement>('#fms-pain-checkbox')?.checked ?? false
+  const note = document.querySelector<HTMLTextAreaElement>('#fms-note-input')?.value ?? ''
+  const scoreValue =
+    task.kind === 'movement'
+      ? document.querySelector<HTMLInputElement>('input[name="fms-score"]:checked')?.value ?? null
+      : null
+  const score =
+    scoreValue === '1' || scoreValue === '2' || scoreValue === '3' ? (Number(scoreValue) as 1 | 2 | 3) : null
+
+  let nextDraft: FmsSessionDraft
+
+  try {
+    nextDraft = applyFmsTaskResult(draft, task, score, pain, note)
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : 'This step is incomplete.')
+    return
+  }
+
+  if (pain) {
+    const continueAfterPain = window.confirm(
+      'Pain reported. This movement will be marked as pain present. Do you want to continue with the next step?'
+    )
+
+    if (!continueAfterPain) {
+      state.fms.draft = nextDraft
+      await saveAndExitFms('stopped_pain')
+      return
+    }
+  }
+
+  const nextIndex = state.fms.currentTaskIndex + 1
+  const tasks = createFmsTasks(nextDraft.sexForTSPU)
+
+  if (nextIndex >= tasks.length) {
+    const completedDraft = recalculateFmsDraft(nextDraft)
+    completedDraft.status = 'completed'
+    completedDraft.completedAt = new Date().toISOString()
+    await persistFmsDraft(completedDraft)
+    return
+  }
+
+  state.fms.draft = nextDraft
+  state.fms.currentTaskIndex = nextIndex
+  renderApp()
+
+  const nextTask = tasks[nextIndex]
+  if (nextTask) {
+    voiceCoach.speak({
+      key: `fms-${nextTask.id}`,
+      message: nextTask.voiceScript,
+      interrupt: true,
+      minIntervalMs: 0
+    })
+  }
+}
+
 function renderResults(session: StoredSession): void {
   const user = state.activeUser
   if (!user) return
@@ -463,11 +1061,17 @@ function renderLiveSnapshot(snapshot: EngineSnapshot): void {
 
 function syncNavigation(): void {
   const isHome = state.screen === 'home'
+  const isFms = state.screen === 'fms'
   const isProfile = state.screen === 'profile'
 
   els.homeNavHome.classList.toggle('is-active', isHome)
-  els.homeNavProfile.classList.toggle('is-active', !isHome)
-  els.profileNavHome.classList.toggle('is-active', !isProfile)
+  els.homeNavFms.classList.toggle('is-active', isFms)
+  els.homeNavProfile.classList.toggle('is-active', isProfile)
+  els.fmsNavHome.classList.toggle('is-active', isHome)
+  els.fmsNavFms.classList.toggle('is-active', isFms)
+  els.fmsNavProfile.classList.toggle('is-active', isProfile)
+  els.profileNavHome.classList.toggle('is-active', isHome)
+  els.profileNavFms.classList.toggle('is-active', isFms)
   els.profileNavProfile.classList.toggle('is-active', isProfile)
 }
 
@@ -480,6 +1084,7 @@ function renderApp(): void {
   }
 
   renderHome()
+  renderFms()
   renderDetails()
   renderProfile()
 
@@ -785,13 +1390,19 @@ async function handleAuthSubmit(event: SubmitEvent): Promise<void> {
 
   if (state.authMode === 'signup') {
     const name = els.authNameInput.value.trim()
+    const sexForTSPU = els.authSexSelect.value === 'male' || els.authSexSelect.value === 'female' ? els.authSexSelect.value : null
 
     if (name === '') {
       showAuthError('Your name is required.')
       return
     }
 
-    const result = await registerUser(name, email, password)
+    if (!sexForTSPU) {
+      showAuthError('Sex is required for the FMS setup.')
+      return
+    }
+
+    const result = await registerUser(name, email, password, sexForTSPU)
     if (!result.ok) {
       showAuthError(result.message ?? 'Could not create the account.')
       return
@@ -848,13 +1459,48 @@ async function bootstrap(): Promise<void> {
     renderApp()
   })
 
+  els.homeNavFms.addEventListener('click', () => {
+    setActiveScreen('fms')
+    renderApp()
+  })
+
   els.homeNavProfile.addEventListener('click', () => {
+    setActiveScreen('profile')
+    renderApp()
+  })
+
+  els.fmsNavHome.addEventListener('click', () => {
+    setActiveScreen('home')
+    renderApp()
+  })
+
+  els.fmsNavFms.addEventListener('click', () => {
+    setActiveScreen('fms')
+    renderApp()
+  })
+
+  els.fmsNavProfile.addEventListener('click', () => {
+    setActiveScreen('profile')
+    renderApp()
+  })
+
+  els.fmsHomeBtn.addEventListener('click', () => {
+    setActiveScreen('home')
+    renderApp()
+  })
+
+  els.fmsProfileBtn.addEventListener('click', () => {
     setActiveScreen('profile')
     renderApp()
   })
 
   els.profileNavHome.addEventListener('click', () => {
     setActiveScreen('home')
+    renderApp()
+  })
+
+  els.profileNavFms.addEventListener('click', () => {
+    setActiveScreen('fms')
     renderApp()
   })
 
@@ -866,6 +1512,49 @@ async function bootstrap(): Promise<void> {
   els.profileHomeBtn.addEventListener('click', () => {
     setActiveScreen('home')
     renderApp()
+  })
+
+  els.fmsRoot.addEventListener('click', (event) => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) return
+
+    const actionTarget = target.closest<HTMLElement>('[data-fms-action]')
+    const action = actionTarget?.dataset.fmsAction
+    if (!action) return
+
+    if (action === 'save-sex') {
+      void saveFmsProfileSex()
+      return
+    }
+
+    if (action === 'start') {
+      void startFmsFlow()
+      return
+    }
+
+    if (action === 'voice') {
+      const task = getCurrentFmsTask()
+      if (!task) return
+
+      voiceCoach.speak({
+        key: `fms-manual-${task.id}`,
+        message: task.voiceScript,
+        interrupt: true,
+        minIntervalMs: 0
+      })
+      return
+    }
+
+    if (action === 'advance') {
+      void advanceFmsFlow()
+      return
+    }
+
+    if (action === 'quit') {
+      if (window.confirm('Save the current FMS progress as incomplete and stop now?')) {
+        void saveAndExitFms('incomplete')
+      }
+    }
   })
 
   els.coachCard.addEventListener('click', () => {
@@ -933,7 +1622,11 @@ async function bootstrap(): Promise<void> {
       }
       state.activeUser = null
       state.sessions = []
+      state.fmsSessions = []
       state.latestSession = null
+      state.fms.draft = null
+      state.fms.currentTaskIndex = 0
+      state.fms.latestSession = null
       state.authMode = 'login'
       setActiveScreen('auth')
       renderApp()
