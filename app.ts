@@ -31,6 +31,14 @@ import {
   getFmsPatternName,
   type FmsTask
 } from './fms-data.js'
+import {
+  FMS_POSE_CONNECTIONS,
+  FmsTaskAnalyzer,
+  type FmsCaptureMode,
+  type FmsLiveAssessment,
+  type FmsLiveCapture,
+  type FmsPoseLandmark
+} from './fms-mediapipe.js'
 import { SquatSessionEngine, type EngineSnapshot, type PoseLandmark } from './squat-engine.js'
 import { VoiceCoach } from './voice-coach.js'
 
@@ -47,6 +55,20 @@ type FmsState = {
   draft: FmsSessionDraft | null
   currentTaskIndex: number
   latestSession: StoredFmsSession | null
+  camera: {
+    taskId: string | null
+    analyzer: FmsTaskAnalyzer | null
+    landmarker: MediaPipeTasksPoseLandmarker | null
+    stream: MediaStream | null
+    rafId: number | null
+    loading: boolean
+    error: string | null
+    review: FmsLiveCapture | null
+    assessment: FmsLiveAssessment | null
+    mode: FmsCaptureMode
+    lastVideoTime: number
+    running: boolean
+  }
 }
 
 type LiveState = {
@@ -118,7 +140,21 @@ const state: {
   fms: {
     draft: null,
     currentTaskIndex: 0,
-    latestSession: null
+    latestSession: null,
+    camera: {
+      taskId: null,
+      analyzer: null,
+      landmarker: null,
+      stream: null,
+      rafId: null,
+      loading: false,
+      error: null,
+      review: null,
+      assessment: null,
+      mode: 'primary',
+      lastVideoTime: -1,
+      running: false
+    }
   },
   analytics: {
     currentVisit: null,
@@ -395,6 +431,10 @@ function setActiveScreen(screen: ScreenKey): void {
     void flushTrackedScreenVisit()
   }
 
+  if (state.screen === 'fms' && screen !== 'fms') {
+    void stopFmsCameraResources({ closeLandmarker: true })
+  }
+
   state.screen = screen
 
   if (!state.activeUser || !isTrackedScreen(screen)) {
@@ -608,6 +648,301 @@ function buildFmsSummaryMarkup(session: StoredFmsSession): string {
   `
 }
 
+const FMS_TASKS_WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.1/wasm'
+const FMS_HEAVY_MODEL_PATH =
+  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task'
+
+function resetFmsCameraViewState(): void {
+  state.fms.camera.taskId = null
+  state.fms.camera.analyzer = null
+  state.fms.camera.loading = false
+  state.fms.camera.error = null
+  state.fms.camera.assessment = null
+  state.fms.camera.lastVideoTime = -1
+  state.fms.camera.running = false
+}
+
+function getFmsCameraElements(): {
+  video: HTMLVideoElement | null
+  canvas: HTMLCanvasElement | null
+  status: HTMLElement | null
+  guidance: HTMLElement | null
+  error: HTMLElement | null
+} {
+  return {
+    video: document.querySelector<HTMLVideoElement>('#fms-camera-video'),
+    canvas: document.querySelector<HTMLCanvasElement>('#fms-camera-canvas'),
+    status: document.querySelector<HTMLElement>('#fms-camera-status'),
+    guidance: document.querySelector<HTMLElement>('#fms-camera-guidance'),
+    error: document.querySelector<HTMLElement>('#fms-camera-error')
+  }
+}
+
+function updateFmsCameraFeedback(assessment: FmsLiveAssessment | null): void {
+  const camera = getFmsCameraElements()
+  if (!camera.status || !camera.guidance || !camera.error) return
+
+  if (state.fms.camera.error) {
+    camera.error.hidden = false
+    camera.error.textContent = state.fms.camera.error
+  } else {
+    camera.error.hidden = true
+    camera.error.textContent = ''
+  }
+
+  if (!assessment) {
+    camera.status.className = 'status-pill camera-status'
+    camera.status.textContent = state.fms.camera.loading ? 'Loading camera' : 'Waiting'
+    camera.guidance.textContent = state.fms.camera.loading
+      ? 'Loading the heavy pose model and opening the camera.'
+      : 'Prepare the camera, then hold still while the app checks your setup.'
+    return
+  }
+
+  camera.status.className = 'status-pill camera-status'
+  if (assessment.phase === 'ready') {
+    camera.status.classList.add('is-ready')
+  }
+
+  camera.status.textContent = assessment.statusLabel
+  camera.guidance.textContent = assessment.guidance
+}
+
+function drawFmsPose(landmarks: FmsPoseLandmark[] | undefined): void {
+  const camera = getFmsCameraElements()
+  if (!camera.canvas || !camera.video) return
+  if (camera.video.videoWidth === 0 || camera.video.videoHeight === 0) return
+
+  if (camera.canvas.width !== camera.video.videoWidth || camera.canvas.height !== camera.video.videoHeight) {
+    camera.canvas.width = camera.video.videoWidth
+    camera.canvas.height = camera.video.videoHeight
+  }
+
+  const context = camera.canvas.getContext('2d')
+  if (!context) return
+
+  context.clearRect(0, 0, camera.canvas.width, camera.canvas.height)
+
+  if (!landmarks || landmarks.length === 0) return
+
+  context.strokeStyle = '#68e5ff'
+  context.lineWidth = 4
+  context.lineCap = 'round'
+  context.lineJoin = 'round'
+
+  for (const [startIndex, endIndex] of FMS_POSE_CONNECTIONS) {
+    const start = landmarks[startIndex]
+    const end = landmarks[endIndex]
+    if (!start || !end) continue
+    if ((start.visibility ?? 1) < 0.5 || (end.visibility ?? 1) < 0.5) continue
+
+    context.beginPath()
+    context.moveTo(start.x * camera.canvas.width, start.y * camera.canvas.height)
+    context.lineTo(end.x * camera.canvas.width, end.y * camera.canvas.height)
+    context.stroke()
+  }
+
+  context.fillStyle = '#f5f7fb'
+  for (const landmark of landmarks) {
+    if ((landmark.visibility ?? 1) < 0.5) continue
+    context.beginPath()
+    context.arc(landmark.x * camera.canvas.width, landmark.y * camera.canvas.height, 4, 0, Math.PI * 2)
+    context.fill()
+  }
+}
+
+async function stopFmsCameraResources(options: { closeLandmarker?: boolean; preserveReview?: boolean } = {}): Promise<void> {
+  if (state.fms.camera.rafId !== null) {
+    cancelAnimationFrame(state.fms.camera.rafId)
+    state.fms.camera.rafId = null
+  }
+
+  if (state.fms.camera.stream) {
+    for (const track of state.fms.camera.stream.getTracks()) {
+      track.stop()
+    }
+    state.fms.camera.stream = null
+  }
+
+  if (options.closeLandmarker && state.fms.camera.landmarker) {
+    state.fms.camera.landmarker.close()
+    state.fms.camera.landmarker = null
+  }
+
+  const camera = getFmsCameraElements()
+  if (camera.video) {
+    camera.video.srcObject = null
+  }
+
+  if (camera.canvas) {
+    camera.canvas.getContext('2d')?.clearRect(0, 0, camera.canvas.width, camera.canvas.height)
+  }
+
+  if (!options.preserveReview) {
+    state.fms.camera.review = null
+  }
+
+  resetFmsCameraViewState()
+  updateFmsCameraFeedback(state.fms.camera.assessment)
+}
+
+async function getMediaPipeVisionModule(): Promise<MediaPipeTasksVisionModule> {
+  if (!window.__mediaPipeVisionModulePromise) {
+    window.__mediaPipeVisionModulePromise = import(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.1/vision_bundle.mjs'
+    ) as Promise<MediaPipeTasksVisionModule>
+  }
+
+  return window.__mediaPipeVisionModulePromise
+}
+
+async function ensureFmsLandmarker(): Promise<MediaPipeTasksPoseLandmarker> {
+  if (state.fms.camera.landmarker) {
+    return state.fms.camera.landmarker
+  }
+
+  const vision = await getMediaPipeVisionModule()
+  const fileset = await vision.FilesetResolver.forVisionTasks(FMS_TASKS_WASM_ROOT)
+  state.fms.camera.landmarker = await vision.PoseLandmarker.createFromOptions(fileset, {
+    baseOptions: {
+      modelAssetPath: FMS_HEAVY_MODEL_PATH
+    },
+    runningMode: 'VIDEO',
+    numPoses: 1,
+    minPoseDetectionConfidence: 0.5,
+    minPosePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+    outputSegmentationMasks: false
+  })
+
+  return state.fms.camera.landmarker
+}
+
+function renderFmsCaptureMetrics(metrics: readonly string[]): string {
+  if (metrics.length === 0) return ''
+  return `
+    <div class="fms-metric-grid">
+      ${metrics.map((metric) => `<div class="results-note">${escapeHtml(metric)}</div>`).join('')}
+    </div>
+  `
+}
+
+function reviewActionMarkup(task: FmsTask, review: FmsLiveCapture): string {
+  const actions: string[] = ['<button class="secondary-button" data-fms-action="retry-capture" type="button">Retry capture</button>']
+
+  if (task.patternKey === 'deepSquat' && review.score < 3 && review.mode === 'primary') {
+    actions.push('<button class="secondary-button" data-fms-action="retry-heels" type="button">Retry with heels elevated</button>')
+  }
+
+  if (task.patternKey === 'rotaryStability' && review.score < 3 && review.mode === 'primary') {
+    actions.push('<button class="secondary-button" data-fms-action="retry-diagonal" type="button">Try diagonal regression</button>')
+  }
+
+  return actions.join('')
+}
+
+async function startFmsMovementCapture(task: FmsTask, mode: FmsCaptureMode = state.fms.camera.mode): Promise<void> {
+  const draft = state.fms.draft
+  if (!draft) return
+
+  if (state.fms.camera.running && state.fms.camera.taskId === task.id && state.fms.camera.mode === mode) {
+    return
+  }
+
+  await stopFmsCameraResources({ preserveReview: false })
+
+  state.fms.camera.mode = mode
+  state.fms.camera.taskId = task.id
+  state.fms.camera.loading = true
+  state.fms.camera.error = null
+  state.fms.camera.review = null
+  state.fms.camera.assessment = null
+  updateFmsCameraFeedback(null)
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: 'user',
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    })
+
+    const landmarker = await ensureFmsLandmarker()
+    const camera = getFmsCameraElements()
+    if (!camera.video) {
+      throw new Error('The FMS camera view is missing from the screen.')
+    }
+
+    state.fms.camera.stream = stream
+    state.fms.camera.analyzer = new FmsTaskAnalyzer(task, draft.sexForTSPU, mode)
+    state.fms.camera.lastVideoTime = -1
+    state.fms.camera.running = true
+    state.fms.camera.loading = false
+
+    camera.video.srcObject = stream
+    await camera.video.play()
+    updateFmsCameraFeedback(null)
+
+    const tick = (): void => {
+      if (!state.fms.camera.running || !state.fms.camera.analyzer) return
+
+      state.fms.camera.rafId = requestAnimationFrame(tick)
+
+      const currentCamera = getFmsCameraElements()
+      if (!currentCamera.video || currentCamera.video.readyState < 2) return
+      if (currentCamera.video.currentTime === state.fms.camera.lastVideoTime) return
+
+      state.fms.camera.lastVideoTime = currentCamera.video.currentTime
+
+      const result = landmarker.detectForVideo(currentCamera.video, performance.now())
+      const landmarks = result.landmarks[0] ?? []
+      const worldLandmarks = result.worldLandmarks[0] ?? []
+      const assessment = state.fms.camera.analyzer.processFrame({ landmarks, worldLandmarks }, performance.now())
+
+      state.fms.camera.assessment = assessment
+      updateFmsCameraFeedback(assessment)
+      drawFmsPose(assessment.landmarks)
+
+      if (assessment.phase === 'ready' && !state.fms.camera.analyzer.hasAnnouncedReady) {
+        state.fms.camera.analyzer.markReadyAnnounced()
+        voiceCoach.speak({
+          key: `fms-ready-${task.id}-${mode}`,
+          message: 'Perform the movement now.',
+          minIntervalMs: 0
+        })
+      }
+
+      if (assessment.phase === 'captured' && assessment.capture) {
+        state.fms.camera.review = assessment.capture
+        voiceCoach.speak({
+          key: `fms-captured-${task.id}-${mode}`,
+          message: 'Movement captured.',
+          interrupt: true,
+          minIntervalMs: 0
+        })
+        void stopFmsCameraResources({ preserveReview: true })
+        renderApp()
+      }
+    }
+
+    voiceCoach.speak({
+      key: `fms-task-${task.id}-${mode}`,
+      message: task.voiceScript,
+      interrupt: true,
+      minIntervalMs: 0
+    })
+
+    tick()
+  } catch (error) {
+    state.fms.camera.loading = false
+    state.fms.camera.error = error instanceof Error ? error.message : 'Could not start the heavy pose model.'
+    state.fms.camera.running = false
+    updateFmsCameraFeedback(null)
+  }
+}
+
 function renderFms(): void {
   const user = state.activeUser
   if (!user) return
@@ -621,6 +956,8 @@ function renderFms(): void {
   const latestSummaryMarkup = latestFmsSession ? buildFmsSummaryMarkup(latestFmsSession) : ''
 
   if (!draft) {
+    void stopFmsCameraResources({ closeLandmarker: true })
+
     const sexPromptMarkup =
       currentSex === 'unspecified'
         ? `
@@ -652,12 +989,13 @@ function renderFms(): void {
         <p class="eyebrow">Functional Movement Screen</p>
         <h1>Run the seven-pattern FMS in a fixed order.</h1>
         <p class="section-copy">
-          Guided voice prompts, manual scoring, pain flags, and saved history for Deep Squat, Hurdle Step, Inline Lunge, Shoulder Mobility, Active Straight-Leg Raise, Trunk Stability Push-Up, and Rotary Stability.
+          Heavy MediaPipe pose tracking verifies setup, captures movement attempts, stores FMS history, and keeps the official seven-pattern order locked from start to finish.
         </p>
         <div class="hero-badges">
           <span class="pill">7 patterns</span>
           <span class="pill">Fixed order</span>
           <span class="pill">Pain aware</span>
+          <span class="pill">Heavy pose model</span>
         </div>
       </div>
 
@@ -711,27 +1049,114 @@ function renderFms(): void {
   }
 
   if (!task) {
+    void stopFmsCameraResources({ closeLandmarker: true })
     els.fmsRoot.innerHTML = latestSummaryMarkup
     return
   }
 
+  const review = state.fms.camera.review
   const taskTitle = `${task.patternName}${task.side ? ` · ${task.side}` : ''}`
-  const scoreOptionsMarkup =
-    task.kind === 'movement'
-      ? task.scoreOptions
-          .map(
-            (option) => `
-              <label class="fms-score-option">
-                <input type="radio" name="fms-score" value="${option.value}">
-                <span>
-                  <strong>${escapeHtml(option.label)}</strong>
-                  <small>${escapeHtml(option.description)}</small>
-                </span>
-              </label>
-            `
-          )
-          .join('')
-      : '<p class="section-copy">This clearing step only records whether pain is present.</p>'
+
+  if (task.kind === 'movement') {
+    const cameraCardMarkup = review
+      ? `
+          <div class="card fms-card">
+            <div class="section-head">
+              <p class="eyebrow">Capture review</p>
+              <h2>Detected score ${review.score}</h2>
+              <p class="section-copy">
+                Confidence ${Math.round(review.confidence * 100)}%. Review the notes below, then report pain if needed before continuing.
+              </p>
+            </div>
+            ${renderFmsCaptureMetrics(review.metrics)}
+            <div class="fms-note-stack">
+              ${review.notes.length === 0 ? '<p class="results-note">No extra capture notes were generated for this attempt.</p>' : review.notes.map((item) => `<p class="results-note">${escapeHtml(item)}</p>`).join('')}
+            </div>
+            <div class="action-bar">
+              ${reviewActionMarkup(task, review)}
+            </div>
+          </div>
+        `
+      : `
+          <div class="card camera-card fms-live-camera-card">
+            <div class="camera-stage">
+              <video id="fms-camera-video" class="camera-video" autoplay muted playsinline></video>
+              <canvas id="fms-camera-canvas" class="camera-canvas"></canvas>
+              <div class="camera-gradient"></div>
+              <div class="camera-hud">
+                <div class="camera-stats">
+                  <div class="camera-stat">
+                    <span>View</span>
+                    <strong>${escapeHtml(task.cameraView)}</strong>
+                  </div>
+                  <div class="camera-stat">
+                    <span>Model</span>
+                    <strong>Pose heavy</strong>
+                  </div>
+                </div>
+                <span class="status-pill camera-status" id="fms-camera-status">Loading camera</span>
+              </div>
+            </div>
+            <p class="section-copy" id="fms-camera-guidance">Loading the heavy pose model and opening the camera.</p>
+            <p class="camera-error" id="fms-camera-error" hidden></p>
+          </div>
+        `
+
+    els.fmsRoot.innerHTML = `
+      <div class="card fms-card">
+        <div class="section-head">
+          <p class="eyebrow">${escapeHtml(progressLabel)}</p>
+          <h2>${escapeHtml(taskTitle)}</h2>
+          <p class="section-copy">
+            ${escapeHtml(task.cameraView)}. Hold still for position lock, wait for the green ready state, then perform the movement once.
+          </p>
+        </div>
+        <div class="hero-badges">
+          ${task.equipment.map((item) => `<span class="pill">${escapeHtml(item)}</span>`).join('')}
+        </div>
+        <ul class="bullet-list">
+          ${task.instructions.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
+        </ul>
+        <div class="action-bar">
+          <button class="secondary-button" data-fms-action="voice" type="button">Read instructions aloud</button>
+          <button class="secondary-button" data-fms-action="restart-camera" type="button">Restart camera</button>
+        </div>
+      </div>
+
+      ${cameraCardMarkup}
+
+      <div class="card fms-card">
+        <div class="section-head">
+          <p class="eyebrow">Pain and notes</p>
+          <h2>Finish this step</h2>
+          <p class="section-copy">${escapeHtml(task.painPrompt)}</p>
+        </div>
+        <label class="checkbox-row">
+          <input id="fms-pain-checkbox" type="checkbox">
+          <span>Pain was present during this movement.</span>
+        </label>
+        <label class="field">
+          <span>Notes</span>
+          <textarea id="fms-note-input" rows="4" placeholder="Optional notes about balance loss, compensation, asymmetry, or setup issues."></textarea>
+        </label>
+      </div>
+
+      <div class="action-bar">
+        <button class="secondary-button" data-fms-action="quit" type="button">Save and stop</button>
+        <button class="primary-button" data-fms-action="advance" type="button">${state.fms.currentTaskIndex === tasks.length - 1 ? 'Finish FMS' : 'Next step'}</button>
+      </div>
+    `
+
+    if (!review && state.screen === 'fms') {
+      void startFmsMovementCapture(task, state.fms.camera.mode)
+    } else {
+      updateFmsCameraFeedback(null)
+    }
+
+    return
+  }
+
+  void stopFmsCameraResources({ preserveReview: false })
 
   els.fmsRoot.innerHTML = `
     <div class="card fms-card">
@@ -739,7 +1164,7 @@ function renderFms(): void {
         <p class="eyebrow">${escapeHtml(progressLabel)}</p>
         <h2>${escapeHtml(taskTitle)}</h2>
         <p class="section-copy">
-          ${escapeHtml(task.cameraView)}. ${task.kind === 'movement' ? 'Score the movement after the attempt.' : 'Run the clearing test and report pain if it appears.'}
+          ${escapeHtml(task.cameraView)}. This clearing step only records whether pain is present.
         </p>
       </div>
       <div class="hero-badges">
@@ -755,24 +1180,19 @@ function renderFms(): void {
 
     <div class="card fms-card">
       <div class="section-head">
-        <p class="eyebrow">Scoring</p>
-        <h2>${task.kind === 'movement' ? 'Choose the closest score' : 'Clearing test result'}</h2>
+        <p class="eyebrow">Clearing test</p>
+        <h2>Record pain only</h2>
         <p class="section-copy">${escapeHtml(task.painPrompt)}</p>
-      </div>
-      <div class="fms-score-list">
-        ${scoreOptionsMarkup}
       </div>
       <label class="checkbox-row">
         <input id="fms-pain-checkbox" type="checkbox">
-        <span>Pain was present during this step.</span>
+        <span>Pain was present during this clearing test.</span>
       </label>
       <label class="field">
         <span>Notes</span>
-        <textarea id="fms-note-input" rows="4" placeholder="Optional notes about balance loss, compensation, asymmetry, or setup issues."></textarea>
+        <textarea id="fms-note-input" rows="4" placeholder="Optional notes about the clearing response."></textarea>
       </label>
     </div>
-
-    ${latestSummaryMarkup}
 
     <div class="action-bar">
       <button class="secondary-button" data-fms-action="quit" type="button">Save and stop</button>
@@ -805,7 +1225,11 @@ function applyFmsTaskResult(
   task: FmsTask,
   score: 1 | 2 | 3 | null,
   pain: boolean,
-  note: string
+  note: string,
+  options: {
+    autoNotes?: string[]
+    confidence?: number
+  } = {}
 ): FmsSessionDraft {
   const next = cloneFmsDraft(draft)
   const pattern = next.patterns[task.patternKey]
@@ -828,8 +1252,16 @@ function applyFmsTaskResult(
     pattern.clearingPain = true
   }
 
+  if (typeof options.confidence === 'number') {
+    pattern.confidence = Math.min(pattern.confidence, options.confidence)
+  }
+
   if (pain) {
     appendPatternNote(pattern, `${task.patternName}: pain reported.`)
+  }
+
+  for (const generatedNote of options.autoNotes ?? []) {
+    appendPatternNote(pattern, generatedNote)
   }
 
   if (note.trim() !== '') {
@@ -842,11 +1274,13 @@ function applyFmsTaskResult(
 async function persistFmsDraft(nextDraft: FmsSessionDraft): Promise<boolean> {
   try {
     voiceCoach.stop()
+    await stopFmsCameraResources({ closeLandmarker: true })
     const saved = await saveFmsSession(nextDraft)
     state.fms.latestSession = saved
     await refreshUserData()
     state.fms.draft = null
     state.fms.currentTaskIndex = 0
+    state.fms.camera.mode = 'primary'
     setActiveScreen('fms')
     renderApp()
     return true
@@ -895,6 +1329,8 @@ async function startFmsFlow(): Promise<void> {
 
   state.fms.draft = createNewFmsDraft(user, disclaimerAccepted, equipmentConfirmed)
   state.fms.currentTaskIndex = 0
+  state.fms.camera.mode = 'primary'
+  state.fms.camera.review = null
   renderApp()
 
   voiceCoach.stop()
@@ -933,17 +1369,20 @@ async function advanceFmsFlow(): Promise<void> {
 
   const pain = document.querySelector<HTMLInputElement>('#fms-pain-checkbox')?.checked ?? false
   const note = document.querySelector<HTMLTextAreaElement>('#fms-note-input')?.value ?? ''
-  const scoreValue =
-    task.kind === 'movement'
-      ? document.querySelector<HTMLInputElement>('input[name="fms-score"]:checked')?.value ?? null
-      : null
-  const score =
-    scoreValue === '1' || scoreValue === '2' || scoreValue === '3' ? (Number(scoreValue) as 1 | 2 | 3) : null
+  const review = task.kind === 'movement' ? state.fms.camera.review : null
+  const score = task.kind === 'movement' ? review?.score ?? null : null
 
   let nextDraft: FmsSessionDraft
 
   try {
-    nextDraft = applyFmsTaskResult(draft, task, score, pain, note)
+    if (task.kind === 'movement' && !review) {
+      throw new Error('Capture the movement before continuing.')
+    }
+
+    nextDraft = applyFmsTaskResult(draft, task, score, pain, note, {
+      autoNotes: review?.notes,
+      confidence: review?.confidence
+    })
   } catch (error) {
     window.alert(error instanceof Error ? error.message : 'This step is incomplete.')
     return
@@ -974,6 +1413,8 @@ async function advanceFmsFlow(): Promise<void> {
 
   state.fms.draft = nextDraft
   state.fms.currentTaskIndex = nextIndex
+  state.fms.camera.mode = 'primary'
+  state.fms.camera.review = null
   renderApp()
 
   const nextTask = tasks[nextIndex]
@@ -1550,6 +1991,44 @@ async function bootstrap(): Promise<void> {
       return
     }
 
+    if (action === 'restart-camera') {
+      const task = getCurrentFmsTask()
+      if (task?.kind === 'movement') {
+        void startFmsMovementCapture(task, 'primary')
+      }
+      return
+    }
+
+    if (action === 'retry-capture') {
+      const task = getCurrentFmsTask()
+      if (task?.kind === 'movement') {
+        state.fms.camera.review = null
+        state.fms.camera.mode = 'primary'
+        renderApp()
+      }
+      return
+    }
+
+    if (action === 'retry-heels') {
+      const task = getCurrentFmsTask()
+      if (task?.kind === 'movement') {
+        state.fms.camera.review = null
+        state.fms.camera.mode = 'heelsElevated'
+        renderApp()
+      }
+      return
+    }
+
+    if (action === 'retry-diagonal') {
+      const task = getCurrentFmsTask()
+      if (task?.kind === 'movement') {
+        state.fms.camera.review = null
+        state.fms.camera.mode = 'diagonalRegression'
+        renderApp()
+      }
+      return
+    }
+
     if (action === 'quit') {
       if (window.confirm('Save the current FMS progress as incomplete and stop now?')) {
         void saveAndExitFms('incomplete')
@@ -1615,6 +2094,7 @@ async function bootstrap(): Promise<void> {
     void (async () => {
       voiceCoach.stop()
       try {
+        await stopFmsCameraResources({ closeLandmarker: true })
         await flushTrackedScreenVisit(true)
         await logoutUser()
       } catch (error) {
@@ -1627,6 +2107,8 @@ async function bootstrap(): Promise<void> {
       state.fms.draft = null
       state.fms.currentTaskIndex = 0
       state.fms.latestSession = null
+      state.fms.camera.mode = 'primary'
+      state.fms.camera.review = null
       state.authMode = 'login'
       setActiveScreen('auth')
       renderApp()

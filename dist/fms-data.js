@@ -1,8 +1,8 @@
 import { fmsPatternKeys } from './shared-types.js';
 const genericMovementPainPrompt = 'Tell me immediately if you feel any pain.';
 const clearingPainPrompt = 'Do you feel pain during the clearing test?';
-export const fmsDisclaimer = 'This screen does not replace evaluation by a qualified professional such as a physician or personal trainer. It is only a movement-screening tool. If you feel pain during any movement, stop immediately and seek professional evaluation.';
-export const fmsVoiceDisclaimer = 'This screen does not replace a professional opinion. Stop if you feel pain at any time.';
+export const fmsDisclaimer = 'This screen does not replace evaluation by a qualified professional such as a physician, physical therapist, or personal trainer. It is only a movement-screening tool. If you feel pain during any movement, stop immediately and seek professional evaluation.';
+export const fmsVoiceDisclaimer = 'This screen does not replace professional evaluation. Stop immediately if you feel pain.';
 export const fmsOpeningVoice = 'We are starting the Functional Movement Screen. This does not replace professional medical or training advice. Stop if you feel pain. Complete all seven movements to receive your results.';
 export const fmsRequiredEquipment = [
     'Dowel or broomstick',

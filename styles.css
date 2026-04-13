@@ -674,6 +674,15 @@ h2 {
   gap: 10px;
 }
 
+.fms-metric-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.fms-live-camera-card {
+  padding: 14px;
+}
+
 .fms-score-option,
 .fms-pattern-row {
   display: grid;

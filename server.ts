@@ -1290,7 +1290,7 @@ app.use((request, response, next) => {
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' https://fonts.gstatic.com",
       "img-src 'self' data:",
-      "connect-src 'self' https://cdn.jsdelivr.net",
+      "connect-src 'self' https://cdn.jsdelivr.net https://storage.googleapis.com",
       "media-src 'self' blob:",
       "worker-src 'self' blob:"
     ].join('; ')
